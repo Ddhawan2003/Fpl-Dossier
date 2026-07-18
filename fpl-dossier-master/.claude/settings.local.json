@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:/Users/Dell/anaconda3/python.exe -m pip show jinja2)",
+      "Bash(C:/Users/Dell/anaconda3/python.exe -m pip install --upgrade \"jinja2>=3.1.5\")"
+    ]
+  }
+}
