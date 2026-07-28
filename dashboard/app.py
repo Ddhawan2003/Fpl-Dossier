@@ -121,10 +121,18 @@ def writer(text: str) -> None:
 
 
 def table(frame: pd.DataFrame, cols: list[str], height: int | None = None) -> None:
-    st.dataframe(
-        frame[cols], hide_index=True, width="stretch", height=height,
-        column_config={k: v for k, v in FMT.items() if k in cols},
-    )
+    # Only pass `height` when it is set. Recent Streamlit validates the argument
+    # and rejects None outright, so `height=None` raises rather than meaning
+    # "default" -- and Streamlit Cloud runs a newer build than most local envs,
+    # which is exactly how this reached production unnoticed.
+    kwargs = {
+        "hide_index": True,
+        "width": "stretch",
+        "column_config": {k: v for k, v in FMT.items() if k in cols},
+    }
+    if height is not None:
+        kwargs["height"] = height
+    st.dataframe(frame[cols], **kwargs)
 
 
 def paste(md: str) -> None:
