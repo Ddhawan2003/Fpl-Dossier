@@ -1,0 +1,91 @@
+name: Daily FPL logger
+
+# The always-on runner for the market logger. Runs on GitHub's infrastructure,
+# completely independent of the dashboard and of any local machine. Its one job
+# is to never miss a day -- so on failure it exits non-zero AND opens an issue,
+# because a silent gap is the one error we can't repair.
+
+on:
+  schedule:
+    # 22:30 UTC daily. GitHub cron is UTC-only and ignores DST, and scheduled
+    # runs can be delayed under load -- 22:30 UTC keeps us safely before FPL's
+    # ~01:30 UK price change in both BST and GMT even with a delay.
+    - cron: "30 22 * * *"
+  # Manual trigger: use this to recover a same-day failure, or to test.
+  workflow_dispatch:
+
+# Prevent a manual run and a scheduled run from colliding.
+concurrency:
+  group: daily-logger
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # commit the snapshot back to the repo
+  issues: write     # open an alert issue on failure
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install logger dependencies
+        run: pip install -r logger/requirements.txt
+
+      - name: Take snapshot
+        run: python logger/log_snapshot.py
+
+      - name: Commit snapshot
+        run: |
+          git config user.name "fpl-logger[bot]"
+          git config user.email "fpl-logger@users.noreply.github.com"
+          git add data/snapshots
+          if git diff --cached --quiet; then
+            echo "No new/changed snapshot to commit."
+            exit 0
+          fi
+          git commit -m "snapshot: $(date -u +%Y-%m-%d)"
+          # This repo also holds the dashboard, so a human push can land between
+          # our commit and push. Rebase on latest main and retry rather than fail.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt) -- rebasing on origin/main and retrying..."
+            git pull --rebase --autostash origin main || true
+            sleep 5
+          done
+          echo "Could not push the snapshot after 5 attempts."
+          exit 1
+
+      - name: Open an issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const title = `Daily logger failed: ${today}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              `The daily FPL logger failed on **${today}** (UTC).`,
+              ``,
+              `A missing day CANNOT be backfilled -- the FPL API only shows "now".`,
+              `If it's still the same UTC day, re-run the workflow manually to recover:`,
+              `**Actions -> Daily FPL logger -> Run workflow**.`,
+              ``,
+              `Failed run: ${runUrl}`,
+            ].join("\n");
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["logger-failure"],
+            });

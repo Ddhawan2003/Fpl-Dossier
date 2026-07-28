@@ -1,0 +1,3 @@
+# Force LF everywhere so the GitHub Actions shell script and Python never pick
+# up Windows CRLF, which would break the runner's bash.
+* text=auto eol=lf

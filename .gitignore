@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Logger atomic-write temp files (should never be committed)
+data/snapshots/**/*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
