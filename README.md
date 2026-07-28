@@ -5,11 +5,13 @@ Two independent deployables that share a repo but never share a failure mode.
 ```
 .
 ├── logger/                     # Deployable 1: the market logger (LIVE)
-│   ├── log_snapshot.py         #   one self-contained script, two modes
+│   ├── log_snapshot.py         #   the capture job, two modes
+│   ├── check_gaps.py           #   asserts the record has no holes
 │   └── requirements.txt        #   depends only on `requests`
 ├── .github/workflows/
 │   ├── daily-logger.yml        #   daily runner    (cron 22:30 UTC)
-│   └── deadline-logger.yml     #   deadline runner (hourly gate, fires pre-deadline)
+│   ├── deadline-logger.yml     #   deadline runner (hourly gate, fires pre-deadline)
+│   └── gap-check.yml           #   weekly: did the runs actually HAPPEN?
 ├── data/snapshots/             # the daily record -- one CSV per day, per season
 │   └── 2026-27/2026-07-28.csv
 ├── data/deadlines/             # the deadline record -- one CSV per gameweek
@@ -66,6 +68,14 @@ not the dashboard's host.
   failure is recoverable via **Actions → Daily FPL logger → Run workflow**.
 - The commit step rebases-and-retries, so a human push to the dashboard can't
   make the daily snapshot fail to land.
+- **A weekly gap check catches the failure the others can't see.** The two capture
+  workflows alert when a run *fails*; neither can tell you about a run that never
+  *happened* — and that's the likelier outcome, since GitHub disables schedules
+  after 60 days of repo inactivity and cron delivery isn't guaranteed. No run → no
+  failure → no issue → silence, indistinguishable from success. So `gap-check.yml`
+  asks the other question weekly: *does the record actually contain what it
+  should?* It asserts freshness, no missing dates, a capture per passed deadline,
+  and no truncated files — read-only, so it can never damage what it audits.
 
 **Design guarantees (do not break):**
 - *Operationally separate.* The logger imports nothing from `dashboard/` and has
@@ -77,9 +87,14 @@ not the dashboard's host.
 
 ### Snapshot columns
 
-24 columns, identical in both records. All raw FPL API fields except the five
+31 columns, identical in both records. All raw FPL API fields except three
 capture-metadata columns. `now_cost` / `cost_change_*` are integer tenths
 (`75` = £7.5); division happens at read time, never at write time.
+
+The API exposes ~105 fields per player. We take 31, on one rule: log it if it's
+**point-in-time** — overwritten the moment it changes, so it can never be
+recovered — or cheap context that makes the record self-contained. The rest are
+derivable after the fact and are skipped on purpose.
 
 | Column | Meaning |
 |---|---|
@@ -97,13 +112,23 @@ capture-metadata columns. `now_cost` / `cost_change_*` are integer tenths
 | `transfers_in`, `transfers_out` | season totals |
 | `status` | `a`vailable / `d`oubtful / `i`njured / `s`uspended / `u`navailable |
 | `news` | the injury/availability note shown at capture time |
-| `chance_of_playing_next_round` | 0–100, or **empty when the API says null** |
+| `news_added` | **when that note appeared**, to the microsecond |
+| `chance_of_playing_this_round`, `chance_of_playing_next_round` | 0–100, or **empty when the API says null** |
+| `penalties_order`, `direct_freekicks_order`, `corners_and_indirect_freekicks_order` | set-piece duties — **these change mid-season and nothing else records when** |
 | `form` | rolling 30-day figure the API recomputes continuously |
 | `event_points`, `total_points`, `minutes` | scoring state to date |
+| `ep_this`, `ep_next` | **FPL's own expected-points forecast** |
 
-The `status` / `news` / `chance_of_playing` group is as unbackfillable as the
-market fields: it is overwritten the instant the news changes, and it's what makes
-"we called him while he was a 75% doubt" provable rather than remembered.
+Three groups here are as unbackfillable as the market fields:
+
+- **Availability** (`status` / `news` / `news_added` / `chance_of_playing_*`) is
+  overwritten the instant the news changes. It's what makes "we called him while
+  he was a 75% doubt" provable rather than remembered.
+- **Set-piece duties** change during a season. When a club's penalty taker
+  switches in October, nothing records the date unless it was logged.
+- **`ep_next`** is a *forecast* — once the gameweek is played, what was predicted
+  beforehand is gone from every endpoint. It doubles as a free benchmark to grade
+  our own calls against.
 
 `minutes_to_deadline` is deliberately **not** a column — it's derivable at read
 time from `snapshot_utc` and `deadline_time`, and derived metrics don't belong at
@@ -118,6 +143,7 @@ pip install -r logger/requirements.txt
 
 python logger/log_snapshot.py              # -> data/snapshots/<season>/<today>.csv
 python logger/log_snapshot.py --deadline   # -> data/deadlines/<season>/gw<NN>.csv
+python logger/check_gaps.py                # audit the record; exit 1 if holes
 ```
 
 `--deadline` refuses to write unless it's within 180 minutes *before* a real

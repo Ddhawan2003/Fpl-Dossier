@@ -26,6 +26,9 @@ python logger/log_snapshot.py              # daily    -> data/snapshots/<season>
 python logger/log_snapshot.py --deadline   # deadline -> data/deadlines/<season>/gw<NN>.csv
 python logger/log_snapshot.py --deadline --force   # bypass the window guard; recovery only
 
+python logger/check_gaps.py                # audit the record; exit 1 if it has holes
+python logger/check_gaps.py --season 2026-27
+
 # Dashboard
 pip install -r dashboard/requirements.txt
 streamlit run dashboard/app.py             # http://localhost:8501
@@ -76,6 +79,14 @@ looks legitimate. It refuses on: <300 players returned; a deadline that has alre
 `os.replace`). On failure it exits non-zero *and* opens a GitHub issue labelled
 `logger-failure`. Preserve all of this when editing.
 
+**The gap detector answers the question the others can't.** `logger/check_gaps.py` +
+`gap-check.yml` (weekly, Mondays 09:00 UTC, read-only). The capture workflows alert when a
+run *fails*; neither sees a run that never *happened* — no run → no failure → no issue →
+silence. So this asserts the record's contents instead: freshness (newest snapshot ≤2 days
+old, checked **across all seasons** — a season-keyed check would false-alarm every 1 July
+when `season_for()` rolls over before that night's run creates the directory), no missing
+dates, a capture per passed deadline, and no file under 300 rows.
+
 **The deadline scheduler.** GitHub cron cannot be dynamic and FPL deadlines move weekly, so
 `deadline-logger.yml` runs hourly at :05 and gates on a ~15s `curl` + `jq` check placed
 *before* checkout/Python/pip, so the ~23 daily no-ops stay near-free. The 120-minute window
@@ -97,12 +108,21 @@ one; `dashboard/app.py` does not (see "Known issues").
 
 ## Snapshot schema semantics
 
-24 columns, identical in both records. Traps that are not obvious from the header:
+31 columns, identical in both records. The API exposes ~105 fields per player; the selection
+rule is "log it if it is point-in-time, or cheap context that makes the record
+self-contained." Traps that are not obvious from the header:
 
 - `now_cost`, `cost_change_*` are **integer tenths** (`155` = £15.5m). Division happens at
   read time. Never store floats — they drift.
-- `chance_of_playing_next_round` is **empty for null, never `0`**. Empty means nothing
-  flagged; `0` means ruled out. Collapsing them invents injuries (515 vs 28 in a live sample).
+- `chance_of_playing_*` is **empty for null, never `0`**. Empty means nothing flagged; `0`
+  means ruled out. Collapsing them invents injuries (515 vs 28 in a live sample). The same
+  `raw()` helper applies to every nullable field — never default one to `0`.
+- `ep_next` is FPL's own forecast and the most perishable field logged: once a gameweek is
+  played it cannot be recovered. It is also the free benchmark until an external model is
+  adopted, and the correct way to rank Differentials (`form` is useless off-season).
+- Set-piece order fields **change mid-season**; the record is the only thing that will know
+  when. They are populated *now* (64 players had a `penalties_order` on 2026-07-28) — do not
+  assume they are empty off-season.
 - `transfers_in_event` / `transfers_out_event` **reset at each deadline**. Diffing them
   across a deadline boundary yields a large negative number — segment by `event`, or diff the
   cumulative `transfers_in` / `transfers_out` instead.
@@ -149,39 +169,44 @@ and CRLF would break the workflows' bash.
 
 ## Known issues / open work
 
-- **No gap detector.** The failure issue fires when a run *fails*, not when a run *never
-  happens* (GitHub disables schedules after 60 days of repo inactivity; Actions can be
-  quota-capped). No run → no failure → no issue → silence, indistinguishable from success.
-  This is the one remaining hole in the logger.
-- **Dashboard "isn't working" on Streamlit Cloud.** Strong suspect, not yet confirmed:
-  `dashboard/app.py` calls `requests.get(...)` with **no `User-Agent`**, so it is subject to
-  the datacenter-IP blocking the logger carries a browser UA to defeat — explaining why it
-  works locally and fails deployed. With no `raise_for_status()`, a 403 HTML body reaches
-  `.json()`, raises, and lands in the red "Could not reach the FPL API" box → `st.stop()`.
-  `dashboard/CONTEXT.md` lists older suspects; this one is not on that list.
+- ~~No gap detector.~~ Shipped 2026-07-28 — see above.
+- **Dashboard "isn't working" on Streamlit Cloud — fix applied, not yet confirmed.** The
+  cause was almost certainly a missing `User-Agent` (see above). `app.py` now sends browser
+  headers and calls `raise_for_status()`. This **cannot be verified locally** — a residential
+  IP is never blocked — so it needs a check against the deployed URL. Also verify the Cloud
+  entrypoint is set to `dashboard/app.py`; it moved on 2026-07-27 and a stale entrypoint
+  fails the deploy before any code runs. `dashboard/CONTEXT.md` lists older, weaker suspects.
+- **Fixing the fetch is not sufficient.** Once it loads, the panels are still misleading
+  off-season (see the data trap above): Differentials sorts by an all-zero `Form` column and
+  returns five arbitrary names. The 11-section rebuild is what actually fixes this.
 - `dashboard/app.py` set-piece panel slices `sp_rows[:8]` in player-id order, which is
   effectively alphabetical-by-team, not by importance.
-- `.devcontainer/devcontainer.json` still points at the pre-flatten path
-  `fpl-dossier-master/fpl-dossier/app.py`, so Codespaces launches nothing.
-- `dashboard/README.md` still describes deploying with `app.py` at the repo root.
 
 ## Roadmap (revised 2026-07-28 — read HANDOFF §6a and §7 before starting work)
 
 Pre-season is the only real build runway; once the season starts the team's ~2–3 hrs/week
 goes to publishing. GW1 deadline: **2026-08-21T17:30:00Z**.
 
+**Done 2026-07-28:** schema widened to 31 columns; gap detector shipped; dashboard fetch bug
+fixed (browser UA + `raise_for_status()`); devcontainer and `dashboard/README.md` repointed
+off the pre-flatten paths.
+
 **Next actions, in order:**
 
-1. **Six more logger columns** — `ep_next` (+`ep_this`), `news_added`,
-   `chance_of_playing_this_round`, and the three set-piece order fields. ~15 minutes, and
-   *perishable*: `ep_next` is FPL's own forecast (535/563 populated), and a forecast is gone
-   the moment the gameweek plays. Set-piece duties change mid-season with no record of when.
-   Do this before the dashboard — never let a long task block a short perishable one.
-2. **The dashboard** — fix the fetch (browser UA + `raise_for_status()`), confirm against the
-   *deployed* URL since the 403 only reproduces from a datacenter IP, then rebuild around the
-   11 content sections. Everything else is blocked behind this.
-3. **External points model as a benchmark** — deferred until a few gameweeks in. `ep_next`
+1. **The dashboard rebuild.** Everything else is blocked behind it.
+   (a) Confirm the fetch fix against the **deployed** Streamlit Cloud URL — a residential IP
+   is never blocked, so passing locally proves nothing; also check the Cloud entrypoint is
+   `dashboard/app.py`. (b) Split fetching/history loading into `dashboard/data.py`.
+   (c) Rebuild around the 11 content sections, **read-only first**.
+   Expect it to look sparse: trend sections need a week or two of snapshots, and performance
+   fields are 2025-26 until GW1. Only ~4 of 11 sections say anything useful today (Captain,
+   Differentials, Transfer Roadmap, Chip Strategy). Build all 11 with explicit "not enough
+   history yet" states rather than misleading empty ones.
+   **Blocked on an unanswered question:** Bench Order and part of Transfer Roadmap need the
+   team's FPL team ID (`entry/{id}/`); without it they must be generic.
+2. **External points model as a benchmark** — deferred until a few gameweeks in. `ep_next`
    ranks Differentials in the meantime.
+3. **Ledger writeback** — after the git-vs-mutable-store question is decided.
 
 **The old four-item roadmap collapsed to three.** Dashboard, calls ledger and data-pack
 generator are not separate features — once the dashboard is rebuilt around the team's 11 blog

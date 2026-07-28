@@ -26,12 +26,36 @@ h1, h2, h3 { font-family: 'Space Grotesk', sans-serif !important; }
 
 POS_NAMES = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 
+# The FPL API 403s / times out for requests from datacenter IPs unless a
+# browser-like User-Agent is sent. Streamlit Community Cloud runs on datacenter
+# IPs; your laptop does not -- which is exactly why this app worked locally and
+# failed once deployed. logger/log_snapshot.py has carried these headers from
+# day one for the same reason.
+FPL_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
 
 # ---------- Data loading ----------
+def _get_json(url):
+    """Fetch JSON, failing loudly on a non-200.
+
+    Without raise_for_status() a 403 returns an HTML error page, .json() raises
+    a confusing JSONDecodeError, and the real cause (blocked request) is hidden.
+    """
+    resp = requests.get(url, headers=FPL_HEADERS, timeout=15)
+    resp.raise_for_status()
+    return resp.json()
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def load_fpl_data():
-    bootstrap = requests.get("https://fantasy.premierleague.com/api/bootstrap-static/", timeout=15).json()
-    fixtures = requests.get("https://fantasy.premierleague.com/api/fixtures/", timeout=15).json()
+    bootstrap = _get_json("https://fantasy.premierleague.com/api/bootstrap-static/")
+    fixtures = _get_json("https://fantasy.premierleague.com/api/fixtures/")
     return bootstrap, fixtures
 
 

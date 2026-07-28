@@ -78,10 +78,16 @@ DEADLINE_MAX_LEAD_MINUTES = 180
 
 POS_NAMES = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 
-# The columns we log, in order. Every one is a raw API field except the four
-# capture-metadata columns at the top (what we fetched, and when). now_cost and
-# the cost_change_* fields are integer tenths (75 == GBP 7.5); we store them raw
-# so the record is exact and the dashboard does any division at read time.
+# The columns we log, in order. Every one is a raw API field except the three
+# capture-metadata columns at the top (snapshot_utc / snapshot_date /
+# snapshot_kind -- what we fetched and when). now_cost and the cost_change_*
+# fields are integer tenths (75 == GBP 7.5); we store them raw so the record is
+# exact and the dashboard does any division at read time.
+#
+# The API exposes ~105 fields per player. We take these deliberately: everything
+# here is either point-in-time (overwritten the moment it changes, so it cannot
+# be recovered later) or cheap context that makes the record self-contained. The
+# rest are derivable after the fact and are skipped on purpose.
 COLUMNS = [
     # --- capture metadata ---------------------------------------------------
     "snapshot_utc",          # exact ISO-8601 fetch time (UTC)
@@ -103,14 +109,26 @@ COLUMNS = [
     "transfers_out_event",   # transfers out during the current event (RESETS at deadline)
     "transfers_in",          # total transfers in this season
     "transfers_out",         # total transfers out this season
-    # --- point-in-time state, equally unbackfillable ------------------------
+    # --- point-in-time availability, equally unbackfillable -----------------
     "status",                # a=available, d=doubtful, i=injured, s=suspended, u=unavailable
     "news",                  # the injury/availability note shown at capture time
+    "news_added",            # when that note appeared -- sharper than inferring from dailies
+    "chance_of_playing_this_round",  # 0-100, or EMPTY when the API says null
     "chance_of_playing_next_round",  # 0-100, or EMPTY when the API says null
+    # --- set-piece duties: these CHANGE mid-season and nothing records when --
+    "penalties_order",
+    "direct_freekicks_order",
+    "corners_and_indirect_freekicks_order",
+    # --- performance to date ------------------------------------------------
     "form",                  # rolling 30-day figure the API recomputes continuously
     "event_points",          # points in the current event
     "total_points",          # season total to date
     "minutes",               # minutes played to date
+    # --- FPL's own forecast: the most perishable data in the response -------
+    # Once a gameweek is played, what was predicted beforehand is gone. Logging
+    # it also gives a free benchmark to grade our own calls against.
+    "ep_this",               # expected points, current event (null off-season)
+    "ep_next",               # expected points, next event
 ]
 
 
@@ -234,11 +252,20 @@ def build_rows(data: dict, snapshot_utc: datetime, kind: str, event: dict | None
             "transfers_out": p.get("transfers_out", 0),
             "status": raw(p.get("status")),
             "news": raw(p.get("news")),
+            "news_added": raw(p.get("news_added")),
+            "chance_of_playing_this_round": raw(p.get("chance_of_playing_this_round")),
             "chance_of_playing_next_round": raw(p.get("chance_of_playing_next_round")),
+            "penalties_order": raw(p.get("penalties_order")),
+            "direct_freekicks_order": raw(p.get("direct_freekicks_order")),
+            "corners_and_indirect_freekicks_order": raw(
+                p.get("corners_and_indirect_freekicks_order")
+            ),
             "form": raw(p.get("form")),
             "event_points": p.get("event_points", 0),
             "total_points": p.get("total_points", 0),
             "minutes": p.get("minutes", 0),
+            "ep_this": raw(p.get("ep_this")),
+            "ep_next": raw(p.get("ep_next")),
         })
     return rows
 

@@ -56,11 +56,13 @@ Fpl-Dossier/
 ├── .gitattributes                # forces LF (protects the Actions shell script)
 ├── .gitignore
 ├── logger/                       # DEPLOYABLE 1 — the market logger
-│   ├── log_snapshot.py           #   the entire job, self-contained, two modes
+│   ├── log_snapshot.py           #   the capture job, self-contained, two modes
+│   ├── check_gaps.py             #   asserts the record has no holes
 │   └── requirements.txt          #   `requests` only
 ├── .github/workflows/
 │   ├── daily-logger.yml          #   daily runner (cron 22:30 UTC)
-│   └── deadline-logger.yml       #   deadline runner (hourly gate, fires pre-deadline)
+│   ├── deadline-logger.yml       #   deadline runner (hourly gate, fires pre-deadline)
+│   └── gap-check.yml             #   weekly: did the runs actually HAPPEN?
 ├── data/snapshots/               # the daily record — one CSV per day, per season
 │   └── 2026-27/
 │       └── 2026-07-28.csv
@@ -136,10 +138,15 @@ The gate compares timestamps as **strings**, not via jq's `fromdateiso8601` —
 that function is backed by `strptime` and is missing from some jq builds. A gate
 that silently errors is a gate that never fires.
 
-### 4c. Snapshot columns (both records, 24 columns, identical schema)
+### 4c. Snapshot columns (both records, 31 columns, identical schema)
 
-All raw FPL fields except the five capture-metadata columns. `now_cost` /
+All raw FPL fields except the three capture-metadata columns. `now_cost` /
 `cost_change_*` are integer tenths (`75` = £7.5) — division happens at read time.
+
+The API exposes ~105 fields per player; the logger takes 31. The selection rule:
+log it if it is **point-in-time** (overwritten the moment it changes, so it can
+never be recovered) or cheap context that makes the record self-contained.
+Everything else is derivable after the fact and is skipped on purpose.
 
 | Column | Meaning |
 |---|---|
@@ -157,9 +164,52 @@ All raw FPL fields except the five capture-metadata columns. `now_cost` /
 | `transfers_in`, `transfers_out` | season totals |
 | `status` | `a`vailable / `d`oubtful / `i`njured / `s`uspended / `u`navailable |
 | `news` | the injury/availability note shown at capture time |
-| `chance_of_playing_next_round` | 0–100, or **empty when the API says null** |
+| `news_added` | **when that note appeared** — microsecond precision, straight from the API |
+| `chance_of_playing_this_round`, `chance_of_playing_next_round` | 0–100, or **empty when the API says null** |
+| `penalties_order` | set-piece duty — **changes mid-season, nothing else records when** |
+| `direct_freekicks_order` | as above |
+| `corners_and_indirect_freekicks_order` | as above |
 | `form` | rolling 30-day figure the API recomputes continuously |
 | `event_points`, `total_points`, `minutes` | scoring state to date |
+| `ep_this`, `ep_next` | **FPL's own expected-points forecast.** The most perishable data in the response: once a gameweek is played, what was predicted beforehand is gone. Also a free benchmark to grade our calls against. |
+
+Live sample (2026-07-28): `ep_next` populated for 563/563 (Haaland 4.0);
+`news_added` for 50; `penalties_order` for 64 (Haaland `1`);
+`ep_this` / `chance_of_playing_this_round` empty, correct off-season.
+
+### 4d. The gap detector — `logger/check_gaps.py` + `gap-check.yml`
+
+The daily and deadline workflows each open an issue when a run **fails**. Neither
+can tell you about a run that never **happened** — and that is the more likely
+outcome (GitHub disables schedules after 60 days of repo inactivity; Actions can
+be quota-capped; cron delivery is not guaranteed). No run → no failure → no issue
+→ silence, indistinguishable from success.
+
+So this job asks the other question: *does the record actually contain what it
+should?* Weekly, Mondays 09:00 UTC, in its own workflow so it does not share a
+failure mode with what it checks. It is **read-only** (`contents: read`) — it can
+never damage the record it audits. Running it also counts as repository activity,
+which helps keep GitHub from marking the schedules dormant in the first place.
+
+Four assertions:
+1. **Freshness** — the newest snapshot *anywhere* is ≤2 days old. This is the
+   alarm that matters, and it is deliberately **season-agnostic**: `season_for()`
+   rolls over on 1 July but that season's directory does not exist until that
+   night's run, so a season-keyed check would cry wolf every year.
+2. **No holes** — a file for every UTC date from the first capture to yesterday
+   (never today; the daily run is at 22:30 UTC).
+3. **Deadline coverage** — a `gw<NN>.csv` for every deadline that has passed
+   *since logging began*. Earlier gameweeks were never ours to capture.
+4. **No truncation** — every file has ≥300 data rows. A short CSV is a gap
+   wearing a valid filename.
+
+Verified against fixtures: mid-record holes and a truncated file are both caught;
+an empty new-season directory correctly does **not** alarm; a stale record does.
+
+```bash
+python logger/check_gaps.py                  # current season
+python logger/check_gaps.py --season 2026-27 # a specific one
+```
 
 `minutes_to_deadline` is deliberately **not** a column — it is derivable at read
 time from `snapshot_utc` and `deadline_time`, and rule 2 forbids derived metrics
@@ -274,80 +324,84 @@ DONE:
 - Deadline-anchored capture added (`deadline-logger.yml`, `--deadline` mode),
   with the hourly gate verified against the live API at T-45min, T-119min, and
   just-past-deadline (where it correctly rolls forward to the next gameweek).
-- Schema widened to 24 columns: added the unbackfillable point-in-time fields
-  (`status`, `news`, `chance_of_playing_next_round`, `form`, `event_points`,
-  `total_points`, `minutes`) plus `snapshot_kind` and `deadline_time`.
+- Schema widened to **31 columns** (§4c). The 24-column pass added `status`,
+  `news`, `chance_of_playing_next_round`, `form`, `event_points`, `total_points`,
+  `minutes`, `snapshot_kind`, `deadline_time`; the 31-column pass added
+  `ep_next`, `ep_this`, `news_added`, `chance_of_playing_this_round` and the
+  three set-piece order fields.
+- **24-column schema confirmed round-tripping from the Linux runner** — bot
+  commit `c57d130` (2026-07-28 daily run) has the full header. This was the one
+  path that could previously only be tested locally.
+- **Gap detector shipped** (§4d) — the last hole in the logger is closed.
+- Dashboard fetch bug fixed: browser `User-Agent` + `raise_for_status()`.
+- `.devcontainer/devcontainer.json` repointed at `dashboard/app.py`;
+  `dashboard/README.md` deploy steps corrected.
 
-Deployment note: `deadline-logger.yml` needs **no manual setup**. Repo-wide
-Actions write permission is already on, so it begins polling hourly as soon as it
-is on `main`. GitHub can take a few minutes to register a newly added cron.
+Deployment note: new workflows need **no manual setup**. Repo-wide Actions write
+permission is already on, so a workflow begins running as soon as it is on
+`main`. GitHub can take a few minutes to register a newly added cron.
 
-STILL OPEN — the one real hole in the logger:
-- **No gap detector.** The failure issue fires when a run *fails*, not when a run
-  *never happens*. GitHub disables scheduled workflows after 60 days of
-  repository inactivity (one easily-missed email), and Actions can be disabled or
-  quota-capped. In all of those cases: no run → no failure → no issue → silence,
-  which is indistinguishable from success. A weekly workflow that asserts "there
-  is a file for each of the last N days, and a `gw<NN>.csv` for each passed
-  deadline" and opens an issue otherwise would close this.
-
-Also pending (dashboard, separate task):
-- Update the Streamlit Cloud entrypoint to `dashboard/app.py`.
-- **Likely cause of the "app isn't working" bug, not yet confirmed:**
-  `dashboard/app.py` calls `requests.get(...)` with **no `User-Agent` header**,
-  so it goes out as `python-requests/2.x`. That is the exact datacenter-IP
-  blocking the logger carries a browser UA to defeat. It explains the symptom
-  precisely — works locally (residential IP), fails on Streamlit Cloud
-  (datacenter IP). With no `raise_for_status()`, a 403 HTML body hits `.json()`,
-  raises, and lands in the red "Could not reach the FPL API" box → `st.stop()`.
-  Fix is two lines. Not on the suspect list in `dashboard/CONTEXT.md`.
+Still pending (dashboard):
+- **Update the Streamlit Cloud entrypoint to `dashboard/app.py`** — a manual step
+  in the Cloud app settings, needs the owner's account. The file moved on
+  2026-07-27 and a stale entrypoint fails the deploy before any code runs.
+- **Confirm the fetch fix against the deployed URL.** The missing `User-Agent`
+  was almost certainly the "app isn't working" cause — `requests` went out as
+  `python-requests/2.x` into the same datacenter-IP blocking the logger carries a
+  browser UA to defeat, which is exactly why it worked locally and failed
+  deployed. That is now fixed *and* `raise_for_status()` added, so a block
+  surfaces as a real HTTP error instead of a confusing `JSONDecodeError`. But it
+  **cannot be verified locally** — a residential IP is never blocked. Only the
+  deployed app proves it.
 - **Fixing the fetch is not sufficient — the panels are also misleading.** See the
   off-season data trap in §8: every performance field except `form` and
   `event_points` is currently serving 2025-26 values. Once it loads, Differentials
   sorts by a `Form` column that is `0.0` for all 563 players (returning five
   arbitrary names), and Regression watch computes over last season's totals with no
   label. `Next 5 FDR` is the only panel that is correct today. This is worse than a
-  crash because it looks plausible.
+  crash because it looks plausible. The §5b rebuild is what actually fixes this.
 - `dashboard/app.py` set-piece panel slices `sp_rows[:8]` in player-id order,
-  which is effectively alphabetical-by-team, not by importance.
-- `.devcontainer/devcontainer.json` still points at the pre-flatten path
-  `fpl-dossier-master/fpl-dossier/app.py`, so Codespaces launches nothing.
-- `dashboard/README.md` still describes deploying with `app.py` at the repo root.
+  which is effectively alphabetical-by-team, not by importance. (Note: set-piece
+  orders *are* populated — 64 players have a `penalties_order` as of 2026-07-28 —
+  so this panel does have real data to show, it is just ordered badly.)
 
 ---
 
-## 6a. NEXT UP — agreed sequencing (2026-07-28)
+## 6a. NEXT UP — agreed sequencing (updated 2026-07-28)
 
-**1. NOW — six more logger columns. Cheap, unbackfillable, no dependencies.**
+- ✅ ~~**Seven more logger columns**~~ — done, schema is 31 columns (§4c).
+- ✅ ~~**Gap detector**~~ — done (§4d).
+- ✅ ~~**Dashboard fetch bug**~~ — `User-Agent` + `raise_for_status()` added.
+- ✅ ~~**devcontainer / dashboard README**~~ — stale pre-flatten paths corrected.
 
-Do this before anything else: it is ~15 minutes of work and it is *perishable*.
-Every night it is not shipped is a night of data that can never be recovered. The
-dashboard is days of work and loses nothing by waiting. Never let a long task
-block a short perishable one.
+**1. NOW — the dashboard rebuild. Everything else is blocked behind it.**
 
-| Field | Why it cannot wait |
-|---|---|
-| `ep_next` | **FPL's own expected-points forecast**, already in the response we fetch, populated for 535/563 players (Haaland 4.0). A forecast is the most perishable data there is — once the gameweek plays, what was predicted beforehand is gone. Also gives a free benchmark, and immediately fixes ranking Differentials by a `form` column that is currently all zeros. |
-| `news_added` | Timestamp of *when* an injury flag appeared. Far sharper than inferring it from daily snapshots. |
-| `chance_of_playing_this_round` | Sibling of the field already logged; differs mid-gameweek. |
-| `penalties_order` | Set-piece duties **change mid-season**. When a club's penalty taker switches in October, nothing records the date unless it was logged. |
-| `direct_freekicks_order` | As above. |
-| `corners_and_indirect_freekicks_order` | As above. Scout Selection depends on all three. |
+   a. **Confirm the fetch fix against the DEPLOYED Streamlit Cloud URL.** The 403
+      only reproduces from a datacenter IP, so passing locally proves nothing.
+      Also verify the Cloud entrypoint is set to `dashboard/app.py`.
+   b. Refactor: `dashboard/data.py` owns fetching (correct headers) and loading
+      snapshot history; `dashboard/app.py` owns layout.
+   c. Rebuild around the 11 content sections (§5b), **read-only first** (§7b).
 
-(`ep_this` exists but is `null` off-season; include it, it populates in-season.
-The API exposes 105 fields per player and the logger takes ~24 — the rest are
-derivable later and deliberately skipped.)
+   Expect it to look sparse, and do not mistake that for breakage. Trend-based
+   sections need a week or two of snapshots; performance fields are 2025-26 until
+   GW1 (§8). Realistically only ~4 of the 11 sections say anything useful today:
+   Captain (`ep_next` + fixture difficulty), Differentials (`ep_next` +
+   ownership), Transfer Roadmap (fixture ticker) and Chip Strategy (double/blank
+   detection). Build all 11 anyway, with explicit "not enough history yet" states
+   rather than misleading empty ones.
 
-**2. NEXT — the dashboard. Everything else is blocked behind this.**
-   a. Fix the fetch: add the browser `User-Agent` + `raise_for_status()`.
-   b. Confirm against the deployed Streamlit Cloud URL (the 403 only reproduces
-      from a datacenter IP, so local testing cannot prove it).
-   c. Rebuild around the 11 sections (§5b), read-only first — see §7 for why.
+   **Open question, still unanswered:** Bench Order and part of Transfer Roadmap
+   need the team's **FPL team ID** (`entry/{id}/`). Without it those two sections
+   have to be generic, with the XI entered by hand.
 
-**3. AFTER A FEW GAMEWEEKS — an external points model as a benchmark.**
+**2. AFTER A FEW GAMEWEEKS — an external points model as a benchmark.**
    Not before. `ep_next` is enough to rank Differentials in the meantime, and an
    external model should not become load-bearing until it has survived a few
    gameweeks. Conditions in §7c.
+
+**3. LATER — the ledger writeback**, once the git-vs-mutable-store question in
+   §7b is decided. This is the piece most likely to eat a week.
 
 ---
 

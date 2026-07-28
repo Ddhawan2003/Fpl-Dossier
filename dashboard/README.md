@@ -4,51 +4,51 @@ Internal FPL prep dashboard: live player stats, xGI vs actual returns, fixture
 difficulty, ownership, set-piece takers, and price-change signals — pulled
 directly from the official FPL API.
 
-## Run it locally first (optional but recommended)
+> This app lives in `dashboard/` inside the [Fpl-Dossier](../) monorepo. All
+> commands below run from the **repo root**, not from this directory.
+
+## Run it locally
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+pip install -r dashboard/requirements.txt
+streamlit run dashboard/app.py
 ```
 
 It should open at `http://localhost:8501`.
 
 ## Deploy to Streamlit Community Cloud (free)
 
-1. **Create a GitHub repo** and push these three items to it:
-   - `app.py`
-   - `requirements.txt`
-   - `.streamlit/config.toml`
+The repo already exists and is already connected. You only need this section
+when creating the app or repointing it.
 
-   ```bash
-   git init
-   git add .
-   git commit -m "Gameweek dossier"
-   git branch -M main
-   git remote add origin https://github.com/<your-username>/<repo-name>.git
-   git push -u origin main
-   ```
-
-2. **Go to** [share.streamlit.io](https://share.streamlit.io) and sign in with
+1. **Go to** [share.streamlit.io](https://share.streamlit.io) and sign in with
    your GitHub account.
 
-3. Click **"New app"**, select the repo and branch (`main`), and set the main
-   file path to `app.py`.
+2. Click **"New app"**, select the repo and branch (`main`), and set the main
+   file path to **`dashboard/app.py`**.
 
-4. Click **Deploy**. First build takes a minute or two. You'll get a URL like
-   `https://<something>.streamlit.app` — that's your live app, share it with
-   your co-founder or keep it private via the app's sharing settings.
+   ⚠️ This is the setting that breaks after a reorganisation. The app used to
+   live at `fpl-dossier-master/fpl-dossier/app.py` and was flattened to
+   `dashboard/` on 2026-07-27. If the entrypoint in the Streamlit Cloud app
+   settings still points at an old path, the deploy fails before any of this
+   code runs.
 
-5. **Updating it later**: any time you push a new commit to `main`, the
-   deployed app redeploys automatically. No extra steps needed.
+3. Click **Deploy**. First build takes a minute or two.
+
+4. **Updating it later**: any push to `main` redeploys automatically — including
+   the logger's nightly `snapshot:` commit, so expect the app to reboot roughly
+   once a day. That is normal, not a fault.
 
 ## Notes
 
 - Data refreshes every 15 minutes automatically (via `st.cache_data(ttl=900)`),
   or instantly with the **Refresh data** button in the app.
-- This calls the official FPL API directly — no proxy needed, since Streamlit
-  runs server-side (CORS only applies to browser requests, which is why the
-  earlier browser-based version needed a workaround).
-- Free tier apps on Streamlit Community Cloud can go to sleep after a period
-  of inactivity — the first visit after a while will just take a few extra
-  seconds to spin back up.
+- **The FPL API blocks datacenter IPs** unless a browser `User-Agent` is sent.
+  Streamlit Cloud runs on datacenter IPs, your laptop does not — so a missing
+  header fails *only* once deployed. `app.py` sends the header and calls
+  `raise_for_status()`; don't remove either. See `CONTEXT.md` for the history.
+- Free tier apps can sleep after a period of inactivity — the first visit after
+  a while takes a few extra seconds to spin back up.
+- The dashboard may read the logger's output (`data/snapshots/`,
+  `data/deadlines/`) straight from the checkout. That dependency runs one way
+  only: nothing in `logger/` may ever import from here.

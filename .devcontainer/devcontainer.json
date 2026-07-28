@@ -5,8 +5,8 @@
   "customizations": {
     "codespaces": {
       "openFiles": [
-        "README.md",
-        "fpl-dossier-master/fpl-dossier/app.py"
+        "HANDOFF.md",
+        "dashboard/app.py"
       ]
     },
     "vscode": {
@@ -17,9 +17,9 @@
       ]
     }
   },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
+  "updateContentCommand": "pip3 install --user -r dashboard/requirements.txt -r logger/requirements.txt; echo '✅ Packages installed and Requirements met'",
   "postAttachCommand": {
-    "server": "streamlit run fpl-dossier-master/fpl-dossier/app.py --server.enableCORS false --server.enableXsrfProtection false"
+    "server": "streamlit run dashboard/app.py --server.enableCORS false --server.enableXsrfProtection false"
   },
   "portsAttributes": {
     "8501": {

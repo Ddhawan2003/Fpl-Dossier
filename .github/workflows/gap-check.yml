@@ -1,0 +1,109 @@
+name: Logger gap check
+
+# The daily and deadline workflows each open an issue when a run FAILS. Neither
+# can tell you about a run that never HAPPENED -- and that is the more likely
+# outcome: GitHub disables scheduled workflows after 60 days of repository
+# inactivity, Actions can be disabled or quota-capped, and cron delivery is not
+# guaranteed. In all of those cases there is no run, so no failure, so no issue.
+# Silence, which is indistinguishable from success.
+#
+# This job asks the other question -- "does the record actually contain what it
+# should?" -- which is what catches a logger that has quietly stopped. It lives
+# in its own workflow on its own schedule so it does not share a failure mode
+# with the jobs it checks.
+#
+# Running it also counts as repository activity, which helps keep GitHub from
+# marking the schedules dormant in the first place.
+
+on:
+  schedule:
+    # Mondays at 09:00 UTC -- well clear of the 22:30 daily run, so "today's
+    # snapshot doesn't exist yet" is never mistaken for a gap.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to check (e.g. 2026-27). Blank = current season."
+        type: string
+        required: false
+
+concurrency:
+  group: gap-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read   # read-only: this job never writes to the record
+  issues: write    # open an alert issue when the record has a hole
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install logger dependencies
+        run: pip install -r logger/requirements.txt
+
+      - name: Check the record for gaps
+        run: |
+          if [ -n "${{ inputs.season }}" ]; then
+            python logger/check_gaps.py --season "${{ inputs.season }}"
+          else
+            python logger/check_gaps.py
+          fi
+
+      - name: Open an issue when the record has a hole
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const title = `Logger gap detected: ${today}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // Don't stack duplicates if the gap persists week to week.
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "logger-failure",
+              per_page: 100,
+            });
+            if (open.some(i => i.title.startsWith("Logger gap detected"))) {
+              core.info("An open issue already reports a gap; not opening another.");
+              return;
+            }
+
+            const body = [
+              `The weekly gap check found a hole in the logger's record on **${today}** (UTC).`,
+              ``,
+              `**The run log lists exactly which dates or gameweeks are missing.**`,
+              `Failed run: ${runUrl}`,
+              ``,
+              `This means captures did not happen, not merely that a job errored --`,
+              `the failure workflows would have caught the latter. Likely causes:`,
+              ``,
+              `1. **Scheduled workflows were disabled** after 60 days of repository`,
+              `   inactivity. Check the Actions tab for a banner and re-enable.`,
+              `2. Actions disabled repo-wide, or the Actions quota was exhausted.`,
+              `3. Workflow permissions were reset, so the commit step could not push.`,
+              ``,
+              `⚠️ Past captures **cannot be backfilled** -- the FPL API only shows "now".`,
+              `The priority is restoring the schedule so tomorrow is not lost too.`,
+              `If a deadline capture is missing but its deadline has not passed yet,`,
+              `run **Actions -> Deadline FPL snapshot -> Run workflow** immediately.`,
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["logger-failure"],
+            });
