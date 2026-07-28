@@ -4,7 +4,10 @@
 built, what's done, and what's pending. Written to bring a fresh session (human or
 AI) fully up to speed.*
 
-Repo: https://github.com/Ddhawan2003/Fpl-Dossier · Last major update: 2026-07-27
+Repo: https://github.com/Ddhawan2003/Fpl-Dossier · Last major update: 2026-07-28
+
+**Start here if you are new:** §6 is current state, **§6a is what to do next**,
+§7 is the revised roadmap.
 
 ---
 
@@ -210,13 +213,48 @@ content prep, not public.
 
 - **Entrypoint (Streamlit Cloud):** `dashboard/app.py` — this MUST be updated in
   the Streamlit Cloud app settings, because the file moved from its old nested path.
-- **Known open bug:** deployment was attempted and "the app isn't working" — never
-  diagnosed. See `dashboard/CONTEXT.md` for the suspected culprits (st.rerun
-  version, FPL API 403 from Streamlit's IPs, pandas Styler fragility, off-season
-  empty `events`). Reproduce locally with `streamlit run dashboard/app.py`.
-- **Future (pre-season):** add the calls ledger, data-pack generator, and
-  accountability tracker as separate **pages** that read `data/snapshots/` from
-  this same repo (which is why they share one repo — the read is free).
+- **Known open bug:** deployment was attempted and "the app isn't working". See
+  §6 for the strongest suspect (missing `User-Agent`), and `dashboard/CONTEXT.md`
+  for the older, weaker candidates. Reproduce locally with
+  `streamlit run dashboard/app.py`.
+
+### 5a. Two data sources, split by question type
+
+The dashboard reads **both** the live API and the logger's output, and the split
+matters:
+
+| Question | Source |
+|---|---|
+| "What is Haaland's price *right now*?" | live FPL API — fresher, no history needed |
+| "What *was* it on 19 Aug, and how has it moved?" | `data/snapshots/` + `data/deadlines/` |
+
+The existing panels stay on the live API. Everything historical — and the whole
+accountability record — reads the CSVs out of this same checkout, which is free
+because it is one repo. **This does not violate rule 1**: the dependency runs
+dashboard → logger's *output files*, never the reverse. Break the dashboard and
+tonight's snapshot still lands.
+
+Caveat: Streamlit Cloud redeploys on every push to `main`, and the logger pushes
+daily, so the app reboots roughly once a day. Harmless, but it explains a restart
+that would otherwise look mysterious.
+
+### 5b. Rebuild around the 11 content sections (decided 2026-07-28)
+
+The three inherited panels (Differentials / Regression watch / Set-piece takers)
+are generic FPL heuristics, not how this team actually works. The team's blog
+template (see §9) defines **11 named sections** with word counts and a tone. The
+dashboard should have one section per blog section, in publishing order, so the
+workbench mirrors the template instead of something borrowed.
+
+This supersedes the older "5 lenses" idea for tagging ledger entries: the
+**section is the lens**, by construction. A pick made in the Differentials section
+is a differentials call; nothing needs tagging by hand.
+
+Roughly a third of the template is number-fetching (Captain shortlists, ownership
+%, price/rise timing, minutes and price trends for Scout Selection). That third
+is what the dashboard automates. **Eye Test — the longest and strongest section —
+gets no automation at all.** The entire point of automating the mechanical third
+is to buy back time for the section that actually differentiates the product.
 
 ---
 
@@ -263,29 +301,159 @@ Also pending (dashboard, separate task):
   (datacenter IP). With no `raise_for_status()`, a 403 HTML body hits `.json()`,
   raises, and lands in the red "Could not reach the FPL API" box → `st.stop()`.
   Fix is two lines. Not on the suspect list in `dashboard/CONTEXT.md`.
+- **Fixing the fetch is not sufficient — the panels are also misleading.** See the
+  off-season data trap in §8: every performance field except `form` and
+  `event_points` is currently serving 2025-26 values. Once it loads, Differentials
+  sorts by a `Form` column that is `0.0` for all 563 players (returning five
+  arbitrary names), and Regression watch computes over last season's totals with no
+  label. `Next 5 FDR` is the only panel that is correct today. This is worse than a
+  crash because it looks plausible.
+- `dashboard/app.py` set-piece panel slices `sp_rows[:8]` in player-id order,
+  which is effectively alphabetical-by-team, not by importance.
 - `.devcontainer/devcontainer.json` still points at the pre-flatten path
   `fpl-dossier-master/fpl-dossier/app.py`, so Codespaces launches nothing.
 - `dashboard/README.md` still describes deploying with `app.py` at the repo root.
 
 ---
 
-## 7. Roadmap context (why the order is what it is)
+## 6a. NEXT UP — agreed sequencing (2026-07-28)
 
-Pre-season (now → mid-Aug 2026) is the only real build runway; once the season
-starts, the ~2–3 hrs/week goes entirely to publishing. Tier-1 foundations to build
-before Gameweek 1, in order:
+**1. NOW — six more logger columns. Cheap, unbackfillable, no dependencies.**
 
-1. **Market logger** — DONE (this repo): daily + deadline-anchored capture.
-2. **Calls ledger** — log every recommendation before deadline (pick, confidence,
-   one-line rationale, which of 5 lenses drove it). The moat in raw form.
-3. **Data-pack generator** — one button turns the dashboard into a paste-ready
-   weekly markdown block for the newsletter. Saves 20–30 min/week.
-4. **Accountability engine** — auto-grades the ledger vs a benchmark model and vs
-   the crowd; the public "here's our honest record" visual.
+Do this before anything else: it is ~15 minutes of work and it is *perishable*.
+Every night it is not shipped is a night of data that can never be recovered. The
+dashboard is days of work and loses nothing by waiting. Never let a long task
+block a short perishable one.
 
-Items 2–4 will live as dashboard pages reading `data/snapshots/` + a ledger store.
-Full detail: the operating manual and build roadmap (the two source docs the
-operation is run from — kept by the team, not in this repo).
+| Field | Why it cannot wait |
+|---|---|
+| `ep_next` | **FPL's own expected-points forecast**, already in the response we fetch, populated for 535/563 players (Haaland 4.0). A forecast is the most perishable data there is — once the gameweek plays, what was predicted beforehand is gone. Also gives a free benchmark, and immediately fixes ranking Differentials by a `form` column that is currently all zeros. |
+| `news_added` | Timestamp of *when* an injury flag appeared. Far sharper than inferring it from daily snapshots. |
+| `chance_of_playing_this_round` | Sibling of the field already logged; differs mid-gameweek. |
+| `penalties_order` | Set-piece duties **change mid-season**. When a club's penalty taker switches in October, nothing records the date unless it was logged. |
+| `direct_freekicks_order` | As above. |
+| `corners_and_indirect_freekicks_order` | As above. Scout Selection depends on all three. |
+
+(`ep_this` exists but is `null` off-season; include it, it populates in-season.
+The API exposes 105 fields per player and the logger takes ~24 — the rest are
+derivable later and deliberately skipped.)
+
+**2. NEXT — the dashboard. Everything else is blocked behind this.**
+   a. Fix the fetch: add the browser `User-Agent` + `raise_for_status()`.
+   b. Confirm against the deployed Streamlit Cloud URL (the 403 only reproduces
+      from a datacenter IP, so local testing cannot prove it).
+   c. Rebuild around the 11 sections (§5b), read-only first — see §7 for why.
+
+**3. AFTER A FEW GAMEWEEKS — an external points model as a benchmark.**
+   Not before. `ep_next` is enough to rank Differentials in the meantime, and an
+   external model should not become load-bearing until it has survived a few
+   gameweeks. Conditions in §7c.
+
+---
+
+## 7. Roadmap (revised 2026-07-28 — four items collapsed to three)
+
+Pre-season (now → 2026-08-21) is the only real build runway; once the season
+starts, the ~2–3 hrs/week goes entirely to publishing.
+
+**The old roadmap listed ledger, data-pack and dashboard as three separate things.
+They are not.** Once the dashboard is rebuilt around the 11 blog sections, they
+become **one page at three moments**:
+
+| Moment | What it is called |
+|---|---|
+| Tuesday — 11 sections, candidates + numbers, nothing recorded | the **dashboard** |
+| Thursday — you pick; the pick is timestamped and the market state stapled on | the **ledger** |
+| Friday — hit Copy, paste into Substack | the **data pack** |
+| Six weeks later — it grades what you picked | the **accountability engine** |
+
+So the remaining build is:
+
+1. **Market logger** — DONE: daily + deadline-anchored capture.
+2. **The 11-section workbench** — dashboard + ledger + data pack, one artifact.
+3. **Accountability engine** — a separate page that reads the ledger and the
+   snapshots. Last not because it is hard but because it is **starved**: it needs
+   ledger entries *and* played gameweeks, so before ~GW4–5 it can only say
+   "no data yet".
+
+### 7a. The three questions (use this framing when explaining it)
+
+- **Logger** — *what was true?* Automatic, every day. Running.
+- **Ledger** — *what did we say?* You, once a week, at the moment of picking.
+- **Engine** — *what happened?* Automatic, weeks later.
+
+The ledger is written **before the outcome is known** and must be unchangeable
+afterwards. That gap is the entire product: if entries could be edited once
+results were in, the record is just memory, and memory flatters. It also means
+the ledger must record **misses** — a record containing only wins is marketing,
+and publishing the bad calls is what makes the good ones believable.
+
+### 7b. Build read-only first (the de-risking decision)
+
+Build the 11-section workbench **read-only** to begin with: live data, no
+recording, no writeback. That is immediately useful, it is most of the value, and
+it is roughly a fifth of the difficulty. Add selection-and-record as a second
+pass. That way there is a working workbench before GW1 even if the ledger
+writeback turns out to be a slog.
+
+**The unresolved question, and the thing most likely to eat a week:** recording a
+call means **writing data back**, and Streamlit Cloud has a read-only checkout —
+it cannot push to the repo without a token. Everything else here is reading files,
+which is trivial. Two options, not yet decided:
+
+- **Write to git** — tamper-evident, publicly timestamped, matches the moat
+  argument. More work (needs a PAT, and a commit path that cannot collide with
+  the logger's own pushes).
+- **Write to a Google Sheet or similar** — fast to build, but a mutable timestamp
+  is much weaker evidence, and evidence is the entire point.
+
+Second known risk: if the ledger only understands the 11 sections, a call that
+does not fit a slot never gets recorded. The team's own Twitter template
+anticipates this ("extra dilemmas welcome"), so a free-form slot is needed
+alongside the structured ones.
+
+### 7c. External points model — conditions before adopting one
+
+Agreed direction, deliberately deferred. Two rules make it work or fail:
+
+1. **It is a benchmark to beat, not a source of picks.** If Differentials are
+   ranked by whatever an external model says, the operation is reselling that
+   model. The valuable version is the *disagreement*: "the model's top
+   differential was X, we went with Y, here's why" — then the engine grades both.
+2. **If it feeds a grade, its predictions must be logged daily.** Prediction sites
+   do not keep public archives. Grading a GW6 call in December requires what the
+   model said *in GW6*. The moment an external model is load-bearing for
+   accountability, it becomes another unbackfillable time series we have to own —
+   otherwise the grade is not reproducible and rule 2 is broken.
+
+Candidates: **FPLReview** (best regarded, paid, redistribution restricted — read
+the terms before republishing its numbers; private research use is a different
+thing), **FPL Form** (has offered free exports). Terms not yet verified. Also note
+the dependency risk: an external model can go paid, change format, or disappear
+mid-season.
+
+### 7d. Rejected: agents crawling Twitter / Instagram / FPL blogs
+
+Considered and turned down on 2026-07-28. Splitting it in two:
+
+- **Fact-gathering** (team news, pressers, predicted lineups) — genuinely useful,
+  low-judgment, worth doing eventually. RSS from a few *websites* only.
+- **Opinion aggregation** — rejected. It makes the output downstream of the same
+  voices readers already follow, and it destroys the accountability premise: a
+  call sourced from consensus grades *them*, not us. An LLM-summarised "the
+  community is ~80% on X" is also an interpretation, not a measurement, so it can
+  never feed a grade without breaking rule 2.
+
+Also: **the logger already provides a better crowd signal than scraping would** —
+`selected_by_percent` and the transfer flows are the revealed preferences of ~11M
+managers, measured exactly, daily. §7 item 4 always needed a "vs the crowd"
+benchmark, and that is it.
+
+Practical blockers if it is ever revisited: Twitter/X API is ~$100+/month and
+scraping breaches ToS; Instagram is hostile to automation and most FPL content
+there is text rendered *inside images*; HTML scraping breaks silently on layout
+changes. The killer is maintenance — a multi-source crawler breaks constantly, and
+the team has 2–3 hrs/week that is supposed to go to publishing.
 
 ---
 
@@ -304,7 +472,61 @@ operation is run from — kept by the team, not in this repo).
   season-ready; it fills with signal once the market moves. Note that `status` /
   `news` are *already* live and moving (46 players carried injury notes on
   2026-07-28), so the point-in-time columns earn their keep before GW1.
+- **The off-season data trap.** As of 2026-07-28 the live API serves a mix that
+  will mislead any analysis or UI work: `form` and `event_points` are `0` for all
+  563 players, but `total_points`, `minutes`, `goals_scored`, `assists` and
+  `expected_goal_involvements` still hold **2025-26** values (Haaland: 239 pts,
+  2953 min, 28.17 xGI). 400/563 are non-zero; the 163 zeros are new signings and
+  promoted-club players. Anything computing over performance fields right now is
+  describing last season while appearing current. Those two columns will reset to
+  0 when 2026-27 scoring begins, and the record will capture the exact day of the
+  discontinuity. **This is now the most likely way someone misreads the data.**
 - **UTC everywhere:** snapshots are dated by UTC date; GitHub cron is UTC.
 - **The local `Downloads/fpl-dossier-debug-handoff/` folder is STALE** (old
   structure, not a git repo). This GitHub repo is the source of truth — always
   work from a fresh clone of it.
+
+---
+
+## 9. The content templates (the source of the 11 sections)
+
+The team has a written blog/Twitter/Instagram template pack (a PDF kept by the
+team, not in this repo). It is what §5b's rebuild is derived from, so a fresh
+session needs its shape:
+
+**Blog (Substack) — 11 sections, in publishing order:** Opening (100–150w) ·
+**Captain** (ranked 1–4, 120–180w) · **Buy / Sell / Hold** (150–200w) · **Transfer
+Roadmap** (this week / next week / by GW+2–3, 150–200w) · **Differentials** (3
+players *with ownership %*, 150–200w) · **Bench Order** (50–75w) · **Scout
+Selection** (fixture run, price trend, minutes trend, 75–100w) · **Eye Test**
+(200–300w, explicitly the strongest and most personal section) · **50:50 Calls**
+(100–150w) · **Chip Strategy** (conditional) · **Closing** (60–100w). Total
+~1,300–2,000 words. Tone: light and funny, "a mate talking you through his team,
+not a stats report."
+
+**Twitter/X:** not a template — a *conversion*. The finished blog post becomes a
+Bakar-style Q&A thread, every section reframed as "Q: ...", answers keeping their
+original depth, **captain last** as the closing argument.
+
+**Instagram:** 6 posts (7 in chip weeks) + 3 recurring stories, released on a tier
+system — Tier 1 (Transfer Roadmap, Scout + Eye Test) early in the week, Tier 2
+(Buy/Sell/Hold, Differentials, 50:50) mid-week, **Tier 3 (Captain) closest to the
+deadline**.
+
+Three consequences for the tooling:
+
+1. **The template asks for logger data by name.** Buy/Sell/Hold wants "price/
+   ownership context"; Transfer Roadmap wants "price-rise timing"; Differentials
+   requires an ownership % per player; Scout Selection wants "price trend, minutes
+   trend". These are not features to invent — they are already required fields on
+   a form the team fills in by hand every week.
+2. **The tiered release creates a staleness hazard.** Tier 1 content publishes
+   days before the deadline. If a recommended player is flagged on the Thursday,
+   published content is silently wrong. The team's own checklist has "Captain
+   preference order cross-checked against latest team news" as a *manual* step —
+   the logger's daily `status` / `news` / `news_added` capture makes a
+   "what changed since you drafted this" check automatic. High-value, cheap.
+3. **The blog sections *are* the calls.** Captain 1–4, Buy/Sell/Hold, 3
+   Differentials, the 50:50 lean, the Scout pick — that is the ledger's content,
+   which is why §7 collapses the ledger into the workbench rather than building it
+   separately.
