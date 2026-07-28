@@ -13,7 +13,19 @@ independent deployables in one monorepo**, deliberately running on different eng
 | Deployable | Runs on | State |
 |---|---|---|
 | `logger/` — daily + deadline market logger | GitHub Actions | LIVE, complete |
-| `dashboard/` — Streamlit research workbench | Streamlit Community Cloud | deployed but broken; see "Known issues" |
+| `dashboard/` — Streamlit content workbench | Streamlit Community Cloud | LIVE, read-only; ledger writeback not built |
+
+The dashboard is laid out as the **11 sections of the team's blog template**, in publishing
+order, so the tool mirrors the document being written. `dashboard/data.py` owns all data
+access (live API + snapshot history + trends); `dashboard/app.py` owns layout and sections
+and deals only in DataFrames. Three sections (Opening, Eye Test, Closing) are **human-only by
+design** and must never sprout a table — automating the mechanical ones exists to buy back
+time for the Eye Test.
+
+**Testing a Streamlit change:** `streamlit run` proves only that the server boots — the script
+body executes when a client connects, so a column error inside a section hides behind an
+HTTP 200. Execute `app.py` with a stubbed `streamlit` module to actually exercise every
+section against the live API.
 
 ## Commands
 
@@ -188,25 +200,24 @@ Pre-season is the only real build runway; once the season starts the team's ~2�
 goes to publishing. GW1 deadline: **2026-08-21T17:30:00Z**.
 
 **Done 2026-07-28:** schema widened to 31 columns; gap detector shipped; dashboard fetch bug
-fixed (browser UA + `raise_for_status()`); devcontainer and `dashboard/README.md` repointed
-off the pre-flatten paths.
+fixed (browser UA + `raise_for_status()`); Streamlit Cloud entrypoint corrected and the app
+deploys; devcontainer and `dashboard/README.md` repointed; **dashboard rebuilt around the 11
+content sections**, read-only, with `dashboard/data.py` owning all data access.
 
 **Next actions, in order:**
 
-1. **The dashboard rebuild.** Everything else is blocked behind it.
-   (a) Confirm the fetch fix against the **deployed** Streamlit Cloud URL — a residential IP
-   is never blocked, so passing locally proves nothing; also check the Cloud entrypoint is
-   `dashboard/app.py`. (b) Split fetching/history loading into `dashboard/data.py`.
-   (c) Rebuild around the 11 content sections, **read-only first**.
-   Expect it to look sparse: trend sections need a week or two of snapshots, and performance
-   fields are 2025-26 until GW1. Only ~4 of 11 sections say anything useful today (Captain,
-   Differentials, Transfer Roadmap, Chip Strategy). Build all 11 with explicit "not enough
-   history yet" states rather than misleading empty ones.
-   **Blocked on an unanswered question:** Bench Order and part of Transfer Roadmap need the
-   team's FPL team ID (`entry/{id}/`); without it they must be generic.
+1. **Ledger writeback.** Recording a pick is what turns the read-only workbench into the
+   calls ledger, and the entire moat rests on it. Needs the git-vs-mutable-store decision
+   (HANDOFF §7b) — Streamlit Cloud has a read-only checkout. Most likely to eat a week, and
+   it should exist before GW1 so the record starts with the season.
 2. **External points model as a benchmark** — deferred until a few gameweeks in. `ep_next`
-   ranks Differentials in the meantime.
-3. **Ledger writeback** — after the git-vs-mutable-store question is decided.
+   is enough in the meantime.
+3. **Accountability engine** — starved until ~GW4–5.
+
+Open, non-blocking: the team's FPL team ID would auto-fill the "Our Team" story and let the
+tool sanity-check bench order against what is actually owned. Bench Order itself was reframed
+as reader-facing advice (the cheap players everyone owns), so it no longer needs the squad.
+Open, needs a call: bench ranking currently weights **nailed-on** over upside.
 
 **The old four-item roadmap collapsed to three.** Dashboard, calls ledger and data-pack
 generator are not separate features — once the dashboard is rebuilt around the team's 11 blog

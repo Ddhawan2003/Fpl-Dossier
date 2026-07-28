@@ -1,5 +1,24 @@
 # Context: Gameweek Dossier (FPL Streamlit app) — debugging handoff
 
+> ## ✅ RESOLVED 2026-07-28 — kept for the history only
+>
+> **The cause was not on the suspect list below.** `app.py` fetched the FPL API with
+> **no `User-Agent`**, so requests went out as `python-requests/2.x`. The FPL API
+> 403s datacenter IPs unless a browser UA is sent; Streamlit Cloud runs on
+> datacenter IPs, a laptop does not — which is exactly why it worked locally and
+> failed deployed. With no `raise_for_status()`, the 403's HTML body reached
+> `.json()` and surfaced as a confusing `JSONDecodeError` inside the generic
+> "Could not reach the FPL API" box. `logger/log_snapshot.py` had carried the
+> right headers since day one.
+>
+> A second, separate problem: the **Streamlit Cloud entrypoint** still pointed at
+> the pre-flatten path. That fails the deploy before any application code runs.
+>
+> Both fixed. The app has since been rebuilt around the 11 blog-template sections
+> — see HANDOFF §5b. `dashboard/data.py` now owns all fetching, with the headers
+> in one place. The rest of this file describes the **old** single-file app and is
+> retained only as a record of what was suspected and ruled out.
+
 ## What this is
 A Streamlit dashboard for Fantasy Premier League (FPL) content research/prep.
 Pulls live player stats, fixture difficulty, ownership, and set-piece data,

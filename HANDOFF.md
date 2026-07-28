@@ -288,13 +288,40 @@ Caveat: Streamlit Cloud redeploys on every push to `main`, and the logger pushes
 daily, so the app reboots roughly once a day. Harmless, but it explains a restart
 that would otherwise look mysterious.
 
-### 5b. Rebuild around the 11 content sections (decided 2026-07-28)
+### 5b. Rebuilt around the 11 content sections (DONE 2026-07-28)
 
 The three inherited panels (Differentials / Regression watch / Set-piece takers)
-are generic FPL heuristics, not how this team actually works. The team's blog
-template (see §9) defines **11 named sections** with word counts and a tone. The
-dashboard should have one section per blog section, in publishing order, so the
-workbench mirrors the template instead of something borrowed.
+were generic FPL heuristics, not how this team actually works. The team's blog
+template (see §9) defines **11 named sections** with word counts and a tone, so
+the dashboard now has one tab per blog section, in publishing order — labelled
+with the template's own emoji — plus a `📋 Table` utility tab.
+
+**Files:** `dashboard/data.py` (new) owns *where numbers come from* — the live
+API with correct headers, the snapshot history, fixtures, and trend helpers.
+`dashboard/app.py` owns layout and the sections, and deals only in DataFrames.
+
+**Read-only.** It shows candidates and numbers; it does not record picks.
+Recording is what turns this into the ledger, and that needs the writeback
+decision in §7b made first.
+
+Each tab carries its word-count target from the template, and most carry a
+**"Copy for the post"** markdown block — that is the data pack, delivered
+without any of the ledger's complexity.
+
+Three sections are **human-only by design** (Opening, Eye Test, Closing) and say
+so. Eye Test especially: automating the mechanical sections exists to buy back
+time for that one, so it must never sprout a table.
+
+**Honest gating rather than plausible nonsense.** Trend sections check how much
+history exists and say "1 snapshot stored, need 2+" instead of rendering flat
+lines. A banner fires when `form`/`event_points` are zeroed while `total_points`
+etc. still hold last season's values (§8).
+
+**`ep_next` is coarse pre-season** — values bunch at 4.0/3.3/2.8/2.0 with heavy
+ties, so an unfiltered "top expected points" returns goalkeepers and defenders as
+captain candidates. Captain therefore defaults to MID/FWD and Differentials
+excludes GKP, both adjustable, with a warning that the ordering is close to
+arbitrary until GW1. It becomes a real ranking once the season starts.
 
 This supersedes the older "5 lenses" idea for tagging ledger entries: the
 **section is the lens**, by construction. A pick made in the Differentials section
@@ -341,29 +368,22 @@ Deployment note: new workflows need **no manual setup**. Repo-wide Actions write
 permission is already on, so a workflow begins running as soon as it is on
 `main`. GitHub can take a few minutes to register a newly added cron.
 
-Still pending (dashboard):
-- **Update the Streamlit Cloud entrypoint to `dashboard/app.py`** — a manual step
-  in the Cloud app settings, needs the owner's account. The file moved on
-  2026-07-27 and a stale entrypoint fails the deploy before any code runs.
-- **Confirm the fetch fix against the deployed URL.** The missing `User-Agent`
-  was almost certainly the "app isn't working" cause — `requests` went out as
-  `python-requests/2.x` into the same datacenter-IP blocking the logger carries a
-  browser UA to defeat, which is exactly why it worked locally and failed
-  deployed. That is now fixed *and* `raise_for_status()` added, so a block
-  surfaces as a real HTTP error instead of a confusing `JSONDecodeError`. But it
-  **cannot be verified locally** — a residential IP is never blocked. Only the
-  deployed app proves it.
-- **Fixing the fetch is not sufficient — the panels are also misleading.** See the
-  off-season data trap in §8: every performance field except `form` and
-  `event_points` is currently serving 2025-26 values. Once it loads, Differentials
-  sorts by a `Form` column that is `0.0` for all 563 players (returning five
-  arbitrary names), and Regression watch computes over last season's totals with no
-  label. `Next 5 FDR` is the only panel that is correct today. This is worse than a
-  crash because it looks plausible. The §5b rebuild is what actually fixes this.
-- `dashboard/app.py` set-piece panel slices `sp_rows[:8]` in player-id order,
-  which is effectively alphabetical-by-team, not by importance. (Note: set-piece
-  orders *are* populated — 64 players have a `penalties_order` as of 2026-07-28 —
-  so this panel does have real data to show, it is just ordered badly.)
+Dashboard — resolved:
+- ✅ Streamlit Cloud entrypoint set to `dashboard/app.py`; the app deploys.
+- ✅ Fetch bug fixed (browser `User-Agent` + `raise_for_status()`). The missing
+  header was the cause: `requests` went out as `python-requests/2.x` into the
+  datacenter-IP blocking the logger carries a UA to defeat, which is why it
+  worked locally and failed deployed.
+- ✅ Rebuilt around the 11 sections (§5b), replacing the misleading panels.
+- ✅ Old set-piece panel's arbitrary `sp_rows[:8]` slice gone — Scout Selection
+  now sorts takers by ownership. (37 players hold a first-choice set-piece role
+  as of 2026-07-28, so this has real data now, not only in-season.)
+
+Verified by executing `app.py` end-to-end headlessly against the live API and
+real snapshot files: 10 tables and 3 paste blocks render, both intended warnings
+fire, both history gates fire, no errors. `streamlit run` alone does **not** prove
+this — the script body only executes when a client connects, so a column error in
+a section stays hidden behind an HTTP 200.
 
 ---
 
@@ -374,34 +394,35 @@ Still pending (dashboard):
 - ✅ ~~**Dashboard fetch bug**~~ — `User-Agent` + `raise_for_status()` added.
 - ✅ ~~**devcontainer / dashboard README**~~ — stale pre-flatten paths corrected.
 
-**1. NOW — the dashboard rebuild. Everything else is blocked behind it.**
+- ✅ ~~**Dashboard rebuild**~~ — done, read-only, 11 sections (§5b).
 
-   a. **Confirm the fetch fix against the DEPLOYED Streamlit Cloud URL.** The 403
-      only reproduces from a datacenter IP, so passing locally proves nothing.
-      Also verify the Cloud entrypoint is set to `dashboard/app.py`.
-   b. Refactor: `dashboard/data.py` owns fetching (correct headers) and loading
-      snapshot history; `dashboard/app.py` owns layout.
-   c. Rebuild around the 11 content sections (§5b), **read-only first** (§7b).
+Expect the workbench to look sparse for a while, and do **not** mistake that for
+breakage. Trend sections need a week or two of snapshots (1 stored as of
+2026-07-28); performance fields are 2025-26 until GW1 (§8); `ep_next` is coarse
+until the season starts. Sections that cannot say anything yet say so explicitly.
 
-   Expect it to look sparse, and do not mistake that for breakage. Trend-based
-   sections need a week or two of snapshots; performance fields are 2025-26 until
-   GW1 (§8). Realistically only ~4 of the 11 sections say anything useful today:
-   Captain (`ep_next` + fixture difficulty), Differentials (`ep_next` +
-   ownership), Transfer Roadmap (fixture ticker) and Chip Strategy (double/blank
-   detection). Build all 11 anyway, with explicit "not enough history yet" states
-   rather than misleading empty ones.
-
-   **Open question, still unanswered:** Bench Order and part of Transfer Roadmap
-   need the team's **FPL team ID** (`entry/{id}/`). Without it those two sections
-   have to be generic, with the XI entered by hand.
+**1. NOW — decide the ledger writeback, then build it.** Recording a pick is what
+   turns the read-only workbench into the calls ledger, and the whole moat rests
+   on it. Streamlit Cloud has a read-only checkout, so this needs the
+   git-vs-mutable-store decision in §7b. **This is the piece most likely to eat a
+   week**, and it must exist before GW1 for the record to start with the season.
 
 **2. AFTER A FEW GAMEWEEKS — an external points model as a benchmark.**
-   Not before. `ep_next` is enough to rank Differentials in the meantime, and an
-   external model should not become load-bearing until it has survived a few
-   gameweeks. Conditions in §7c.
+   Not before. `ep_next` is enough in the meantime, and an external model should
+   not become load-bearing until it has survived a few gameweeks. See §7c.
 
-**3. LATER — the ledger writeback**, once the git-vs-mutable-store question in
-   §7b is decided. This is the piece most likely to eat a week.
+**3. THEN — the accountability engine.** Starved until ~GW4–5 (§7).
+
+**Open, non-blocking:** the team's **FPL team ID** (`entry/{id}/`). Bench Order
+was reframed on 2026-07-28 as *reader-facing* advice — the cheap players everyone
+owns and how to order them — so it no longer needs the squad. A team ID would
+still auto-fill the "Our Team" Instagram story and let the tool sanity-check a
+bench order against what is actually owned. Nice-to-have, nothing blocked.
+
+**Open, needs a call:** Bench Order currently weights toward **nailed-on**
+starters. The alternative is weighting toward upside (a cheap player with a good
+fixture who might actually return). Stylistic choice about the advice given, not
+something the data settles.
 
 ---
 
