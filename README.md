@@ -4,35 +4,56 @@ Two independent deployables that share a repo but never share a failure mode.
 
 ```
 .
-├── logger/                  # Deployable 1: the daily market logger (LIVE)
-│   ├── log_snapshot.py      #   one self-contained script
-│   └── requirements.txt     #   depends only on `requests`
+├── logger/                     # Deployable 1: the market logger (LIVE)
+│   ├── log_snapshot.py         #   one self-contained script, two modes
+│   └── requirements.txt        #   depends only on `requests`
 ├── .github/workflows/
-│   └── daily-logger.yml     #   the logger's always-on runner (GitHub Actions)
-├── data/snapshots/          # the record it builds -- one CSV per day, per season
-│   └── 2026-27/
-│       └── 2026-07-28.csv
-└── dashboard/               # Deployable 2: the Streamlit dashboard (later)
-    └── app.py               #   the existing workbench; extended pre-season
+│   ├── daily-logger.yml        #   daily runner    (cron 22:30 UTC)
+│   └── deadline-logger.yml     #   deadline runner (hourly gate, fires pre-deadline)
+├── data/snapshots/             # the daily record -- one CSV per day, per season
+│   └── 2026-27/2026-07-28.csv
+├── data/deadlines/             # the deadline record -- one CSV per gameweek
+│   └── 2026-27/gw01.csv
+└── dashboard/                  # Deployable 2: the Streamlit dashboard (later)
+    └── app.py                  #   the existing workbench; extended pre-season
 ```
 
 The two run on **different engines**: the logger on GitHub Actions, the dashboard
 on Streamlit Community Cloud. That is what keeps them isolated -- breaking or
 redeploying the dashboard can never stop the logger.
 
-## Deployable 1 — The daily logger
+## Deployable 1 — The market logger
 
-**What it does:** once a day, takes one snapshot of the FPL market for every
-player — price, ownership, and transfer flows — and commits it to
-`data/snapshots/<season>/<date>.csv`.
+**What it does:** takes a snapshot of the FPL market for every player — price,
+ownership, transfer flows, and availability — and commits it to this repo. Two
+records, from one script:
+
+| Record | Path | When |
+|---|---|---|
+| **Daily** | `data/snapshots/<season>/<date>.csv` | every day at 22:30 UTC |
+| **Deadline** | `data/deadlines/<season>/gw<NN>.csv` | ~25 min before each gameweek deadline |
 
 **Why it exists:** this history *cannot be backfilled*. The live FPL API only
-ever shows "now", so every day we don't log is signal lost forever. It's the
+ever shows "now", so every capture we miss is signal lost forever. It's the
 foundation several later tools depend on (bandwagon early-warning, price-timing,
 "he was X% owned when we called him").
 
-**How it runs:** the `daily-logger` GitHub Action, on a `22:30 UTC` cron. It runs
-on GitHub's infrastructure — not a laptop, not the dashboard's host.
+**Why the deadline capture is separate:** `transfers_in_event` /
+`transfers_out_event` **reset the moment a deadline passes**. The final
+pre-deadline figures — the ones an accountability record actually needs — live
+for a few hours and then exist nowhere. The daily 22:30 UTC run fires *after*
+that reset on a deadline day, so it can never capture them. The two records are
+kept in separate directories so the daily run cannot overwrite a deadline
+capture later the same day.
+
+**How it runs:** two GitHub Actions, on GitHub's infrastructure — not a laptop,
+not the dashboard's host.
+- `daily-logger` — a plain `22:30 UTC` cron.
+- `deadline-logger` — GitHub cron can't be dynamic and FPL deadlines move every
+  week, so this runs **hourly** and gates: a ~15-second `curl` + `jq` check (no
+  checkout, no Python) asks when the next deadline is and exits unless it's
+  within 120 minutes. That window catches two runs per deadline, so a
+  GitHub-delayed run can't cost us the gameweek.
 
 **Why it never fails silently:**
 - Retries with backoff, and a browser `User-Agent` to get past the FPL API's
@@ -56,29 +77,52 @@ on GitHub's infrastructure — not a laptop, not the dashboard's host.
 
 ### Snapshot columns
 
-All raw FPL API fields. `now_cost` / `cost_change_*` are integer tenths
+24 columns, identical in both records. All raw FPL API fields except the five
+capture-metadata columns. `now_cost` / `cost_change_*` are integer tenths
 (`75` = £7.5); division happens at read time, never at write time.
 
 | Column | Meaning |
 |---|---|
 | `snapshot_utc` | exact ISO-8601 fetch time (UTC) |
-| `snapshot_date` | UTC date of the fetch (one file = one date) |
-| `event` | next/current gameweek id, for context |
+| `snapshot_date` | UTC date of the fetch |
+| `snapshot_kind` | `daily` or `deadline` — survives concatenation |
+| `event` | gameweek id this capture is anchored to |
+| `deadline_time` | that gameweek's deadline (raw API field, UTC) |
 | `id` | element id (stable within a season) |
 | `web_name`, `team`, `position` | identifiers |
 | `now_cost` | price in tenths of a million |
 | `cost_change_event`, `cost_change_start` | price change this event / since season start |
 | `selected_by_percent` | ownership % |
-| `transfers_in_event`, `transfers_out_event` | transfers this event |
+| `transfers_in_event`, `transfers_out_event` | transfers this event — **reset at each deadline** |
 | `transfers_in`, `transfers_out` | season totals |
+| `status` | `a`vailable / `d`oubtful / `i`njured / `s`uspended / `u`navailable |
+| `news` | the injury/availability note shown at capture time |
+| `chance_of_playing_next_round` | 0–100, or **empty when the API says null** |
+| `form` | rolling 30-day figure the API recomputes continuously |
+| `event_points`, `total_points`, `minutes` | scoring state to date |
+
+The `status` / `news` / `chance_of_playing` group is as unbackfillable as the
+market fields: it is overwritten the instant the news changes, and it's what makes
+"we called him while he was a 75% doubt" provable rather than remembered.
+
+`minutes_to_deadline` is deliberately **not** a column — it's derivable at read
+time from `snapshot_utc` and `deadline_time`, and derived metrics don't belong at
+write time. Likewise `chance_of_playing_next_round` is written empty, never `0`,
+when the API returns null: `0` means "ruled out" and null means "nothing flagged",
+and collapsing them would invent injuries.
 
 ### Run it locally
 
 ```bash
 pip install -r logger/requirements.txt
-python logger/log_snapshot.py
-# writes data/snapshots/<season>/<today>.csv
+
+python logger/log_snapshot.py              # -> data/snapshots/<season>/<today>.csv
+python logger/log_snapshot.py --deadline   # -> data/deadlines/<season>/gw<NN>.csv
 ```
+
+`--deadline` refuses to write unless it's within 180 minutes *before* a real
+deadline — writing post-deadline data under a `gw<NN>.csv` filename would look
+correct and silently corrupt the record. `--force` bypasses that, for recovery.
 
 ## Deployable 2 — The dashboard
 

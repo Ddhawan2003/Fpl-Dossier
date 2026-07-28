@@ -1,0 +1,201 @@
+name: Deadline FPL snapshot
+
+# The second runner for the market logger. Where the daily job photographs the
+# market once every UTC day, this one photographs it in the last couple of hours
+# before each gameweek deadline -- the single most valuable moment in the week,
+# because transfers_in_event / transfers_out_event RESET the instant the
+# deadline passes. Those final pre-deadline figures exist for a few hours and
+# are then gone forever, and no endpoint can return them afterwards.
+#
+# GitHub cron cannot be dynamic, and FPL deadlines move every week (Fri 18:30,
+# Sat 10:30, Tue 18:15...). So this runs hourly and gates: it asks the API when
+# the next deadline is, and does nothing at all unless that deadline is inside
+# the next 120 minutes. Nearly every run is a ~15-second no-op.
+#
+# The 120-minute window deliberately catches TWO hourly runs before each
+# deadline (roughly T-85min and T-25min). The later one overwrites the earlier
+# with a closer capture -- and if GitHub delays the later run past the deadline,
+# the script refuses to write and we still hold the T-85min capture. That
+# redundancy is the whole point: one capture per gameweek, never missed.
+
+on:
+  schedule:
+    # Hourly at :05. Deliberately not :00, where GitHub's scheduling queue is
+    # busiest and delays are longest.
+    - cron: "5 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Capture now, ignoring the pre-deadline window guard (recovery only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: deadline-logger
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # commit the snapshot back to the repo
+  issues: write     # open an alert issue on failure
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      # The gate runs BEFORE checkout / Python / pip so that the 23-ish no-op
+      # runs a day cost as little as possible. curl and jq are preinstalled on
+      # ubuntu-latest, so this step needs no setup whatsoever.
+      - name: Is a deadline imminent?
+        id: gate
+        run: |
+          set -uo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            echo "Manual force run -- skipping the window check."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+          json=$(curl -sS --fail --max-time 30 --retry 3 --retry-delay 5 --retry-all-errors \
+                   -H "User-Agent: $UA" -H "Accept: application/json" \
+                   https://fantasy.premierleague.com/api/bootstrap-static/) || json=""
+
+          if [ -z "$json" ]; then
+            # Do NOT fail here. This step runs 24x a day; failing on a blip
+            # would open 24 issues during any FPL API outage. Each deadline gets
+            # multiple gate attempts, so one bad poll is survivable -- and a
+            # poll that fails inside a real window still leaves the other run.
+            echo "::warning::Could not reach the FPL API to check the next deadline. Skipping this poll."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          now=$(date -u +%s)
+          now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Compare as STRINGS, not with jq's fromdateiso8601. That function is
+          # backed by strptime, which is missing from some jq builds (notably
+          # Windows) -- and a gate that silently errors is a gate that never
+          # fires, which is precisely the failure this whole workflow exists to
+          # prevent. FPL deadline_time is always 'YYYY-MM-DDTHH:MM:SSZ', a
+          # fixed-width UTC format that sorts and compares correctly as text.
+          deadline=$(printf '%s' "$json" | jq -r --arg now "$now_iso" '
+            [ .events[]
+              | select(.deadline_time != null)
+              | select(.deadline_time > $now)
+            ] | sort_by(.deadline_time) | .[0].deadline_time // empty')
+
+          if [ -z "$deadline" ]; then
+            echo "No upcoming deadline in the events list (off-season, or season complete)."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          deadline_epoch=$(date -u -d "$deadline" +%s)
+          lead=$(( deadline_epoch - now ))
+          lead_min=$(( lead / 60 ))
+          echo "Next deadline: $deadline (T-${lead_min} min)."
+
+          if [ "$lead" -gt 0 ] && [ "$lead" -le 7200 ]; then
+            echo "Inside the 120-minute window -- taking a deadline capture."
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Outside the window -- nothing to do."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out repo
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.gate.outputs.go == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install logger dependencies
+        if: steps.gate.outputs.go == 'true'
+        run: pip install -r logger/requirements.txt
+
+      - name: Take deadline snapshot
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            python logger/log_snapshot.py --deadline --force
+          else
+            python logger/log_snapshot.py --deadline
+          fi
+
+      - name: Commit snapshot
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          git config user.name "fpl-logger[bot]"
+          git config user.email "fpl-logger@users.noreply.github.com"
+          git add data/deadlines
+          if git diff --cached --quiet; then
+            echo "No new/changed deadline snapshot to commit."
+            exit 0
+          fi
+          git commit -m "deadline snapshot: $(date -u +%Y-%m-%dT%H:%MZ)"
+          # This repo also holds the dashboard and the daily logger, so another
+          # push can land between our commit and ours. Rebase and retry.
+          for attempt in 1 2 3 4 5; do
+            if git push; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt) -- rebasing on origin/main and retrying..."
+            git pull --rebase --autostash origin main || true
+            sleep 5
+          done
+          echo "Could not push the deadline snapshot after 5 attempts."
+          exit 1
+
+      - name: Open an issue on failure
+        if: failure() && steps.gate.outputs.go == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const title = `Deadline snapshot failed: ${today}`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // This job can fire twice inside one deadline window. Don't open a
+            // second issue for the same day if one is already open.
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: "open",
+              labels: "logger-failure",
+              per_page: 100,
+            });
+            if (open.some(i => i.title === title)) {
+              core.info("An open issue already covers today's deadline failure.");
+              return;
+            }
+
+            const body = [
+              `The deadline-anchored FPL snapshot failed on **${today}** (UTC).`,
+              ``,
+              `Pre-deadline transfer and ownership figures CANNOT be backfilled --`,
+              `\`transfers_in_event\` / \`transfers_out_event\` reset the moment the`,
+              `deadline passes.`,
+              ``,
+              `**If the deadline has not passed yet**, re-run immediately:`,
+              `Actions -> Deadline FPL snapshot -> Run workflow.`,
+              ``,
+              `Check \`data/deadlines/\` first -- an earlier run in the same window may`,
+              `already have captured this gameweek, in which case nothing is lost.`,
+              ``,
+              `Failed run: ${runUrl}`,
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["logger-failure"],
+            });

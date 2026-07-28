@@ -4,9 +4,14 @@ __pycache__/
 .venv/
 venv/
 
-# Logger atomic-write temp files (should never be committed)
-data/snapshots/**/*.tmp
+# Logger atomic-write temp files (should never be committed).
+# Covers data/snapshots/ AND data/deadlines/ -- both modes write <target>.tmp
+# before the atomic rename.
+data/**/*.tmp
 
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Claude Code local session state
+.claude/
