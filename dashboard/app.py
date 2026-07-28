@@ -1,12 +1,18 @@
 """Gameweek Dossier -- the weekly content workbench.
 
-Laid out as the eleven sections of the blog template, in publishing order, so
-the tool mirrors the document being written rather than a generic FPL table.
-Each tab carries its word-count target and a paste-ready markdown block.
+One tab per section of the blog template, in publishing order, so the tool
+mirrors the document being written.
 
-Read-only by design for now: it shows candidates and numbers, it does not record
-picks. Recording is what turns this into the calls ledger, and that needs the
-git-vs-mutable-store decision made first (HANDOFF §7b).
+UI rules, deliberately enforced:
+  * Every tab opens on data. At most one line of text above it.
+  * Explanation lives in HANDOFF.md, never on screen. If a number needs a
+    paragraph to justify it, that paragraph is documentation.
+  * State of the world is one status strip, not a stack of banners.
+  * FPL vocabulary, never API vocabulary: "xPts" and "Owned", not `ep_next`
+    and `selected_by_percent`. The writer is not the one reading the schema.
+
+Read-only: it shows candidates, it does not record picks. Recording is the
+calls ledger and needs the writeback decision made first (HANDOFF §7b).
 """
 
 from datetime import datetime, timezone
@@ -20,59 +26,114 @@ st.set_page_config(page_title="Gameweek Dossier", layout="wide", page_icon="⚽"
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-html, body, [class*="css"]  { font-family: 'IBM Plex Mono', monospace; }
-h1, h2, h3 { font-family: 'Space Grotesk', sans-serif !important; }
-.gw-badge {
-    display:inline-block; font-family:'IBM Plex Mono', monospace; font-size:0.85rem;
-    letter-spacing:0.12em; color:#c99a3e; border:1px solid #c99a3e;
-    padding:4px 10px; border-radius:2px; margin-bottom:8px;
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --gold:#c99a3e; --ink:#eeece4; --muted:#8b8578;
+  --ok:#5cb8b2; --warn:#e0a94e; --bad:#e0764e; --line:rgba(238,236,228,0.10);
 }
-.target { font-size:0.75rem; opacity:0.55; letter-spacing:0.08em; text-transform:uppercase; }
-.human { border-left:2px solid #c99a3e; padding:8px 14px; opacity:0.85; font-size:0.9rem; }
+
+html, body, [class*="css"] { font-family:'IBM Plex Mono', monospace; }
+h1,h2,h3 { font-family:'Space Grotesk', sans-serif !important; letter-spacing:-0.01em; }
+
+/* Reclaim the dead space Streamlit puts above the first element. */
+.block-container { padding-top:2.2rem; padding-bottom:3rem; max-width:1500px; }
+
+/* --- masthead ------------------------------------------------------- */
+.mast { display:flex; align-items:baseline; gap:14px; margin-bottom:2px; }
+.mast h1 { font-size:1.55rem; margin:0; }
+.mast .gw { font-size:0.78rem; letter-spacing:0.14em; color:var(--gold);
+            border:1px solid var(--gold); padding:2px 8px; border-radius:2px; }
+
+/* --- status strip: the one place state of the world is stated -------- */
+.strip { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0 18px; }
+.chip { font-size:0.72rem; letter-spacing:0.04em; padding:4px 9px; border-radius:3px;
+        border:1px solid var(--line); background:rgba(238,236,228,0.03); color:var(--ink); }
+.chip b { font-weight:600; }
+.chip i { font-style:normal; color:var(--muted); margin-right:6px;
+          text-transform:uppercase; letter-spacing:0.1em; font-size:0.66rem; }
+.chip.warn { border-color:rgba(224,169,78,0.45); background:rgba(224,169,78,0.07); }
+.chip.warn b { color:var(--warn); }
+.chip.ok b { color:var(--ok); }
+
+/* --- section heads --------------------------------------------------- */
+.head { display:flex; align-items:baseline; justify-content:space-between;
+        border-bottom:1px solid var(--line); padding-bottom:6px; margin:2px 0 14px; }
+.head h3 { font-size:1.02rem; margin:0; }
+.head .target { font-size:0.68rem; color:var(--muted); letter-spacing:0.08em;
+                text-transform:uppercase; }
+.note { font-size:0.76rem; color:var(--muted); margin:-6px 0 12px; }
+.writer { border-left:2px solid var(--gold); padding:10px 14px; margin:4px 0 8px;
+          background:rgba(201,154,62,0.05); font-size:0.86rem; color:var(--ink); }
+.sub { font-size:0.72rem; color:var(--muted); letter-spacing:0.1em;
+       text-transform:uppercase; margin:16px 0 6px; }
+
+/* --- tabs: tighter, quieter ------------------------------------------ */
+.stTabs [data-baseweb="tab-list"] { gap:1px; border-bottom:1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { padding:7px 13px; font-size:0.78rem; }
+[data-testid="stDataFrame"] { font-size:0.82rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# Word-count targets and tone notes, lifted from the blog template so the
-# workbench states the brief rather than assuming it is remembered.
 TARGETS = {
-    "Opening": "100–150 words",
-    "Captain": "120–180 words · ranked 1–4",
-    "Buy / Sell / Hold": "150–200 words across the three",
-    "Transfer Roadmap": "150–200 words",
-    "Differentials": "150–200 words · 3 players with ownership %",
-    "Bench Order": "50–75 words",
-    "Scout Selection": "75–100 words",
-    "Eye Test": "200–300 words · your strongest section",
-    "50:50 Calls": "100–150 words",
-    "Chip Strategy": "100–200 words · only when relevant",
+    "Opening": "100–150 words", "Captain": "120–180 · ranked 1–4",
+    "Buy / Sell / Hold": "150–200 across three", "Transfer Roadmap": "150–200 words",
+    "Differentials": "150–200 · 3 picks", "Bench Order": "50–75 words",
+    "Scout Selection": "75–100 words", "Eye Test": "200–300 · your strongest",
+    "50:50 Calls": "100–150 words", "Chip Strategy": "100–200 · when relevant",
     "Closing": "60–100 words",
 }
 
+# FPL vocabulary, and only the columns a decision actually needs.
+FMT = {
+    "Price": st.column_config.NumberColumn("£", format="%.1f"),
+    "Own %": st.column_config.NumberColumn("Owned", format="%.1f%%"),
+    "xP next": st.column_config.NumberColumn("xPts", format="%.1f"),
+    "Next 5 FDR": st.column_config.NumberColumn("FDR", format="%.1f"),
+    "Δ price": st.column_config.NumberColumn("Δ £", format="%+.1f"),
+    "Δ price 14d": st.column_config.NumberColumn("Δ £ 14d", format="%+.1f"),
+    "Δ own": st.column_config.NumberColumn("Δ Owned", format="%+.1f"),
+    "Fixtures": st.column_config.TextColumn("Next fixtures"),
+    "Set pieces": st.column_config.TextColumn("Set pieces"),
+    "Flag": st.column_config.TextColumn("Status"),
+    "Starts": st.column_config.NumberColumn("Starts", format="%d"),
+}
 
-def target(name: str) -> None:
-    st.markdown(f'<div class="target">Target: {TARGETS[name]}</div>', unsafe_allow_html=True)
+
+def head(name: str) -> None:
+    st.markdown(
+        f'<div class="head"><h3>{name}</h3>'
+        f'<span class="target">{TARGETS[name]}</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
-def human_only(note: str) -> None:
-    st.markdown(f'<div class="human">{note}</div>', unsafe_allow_html=True)
+def note(text: str) -> None:
+    st.markdown(f'<div class="note">{text}</div>', unsafe_allow_html=True)
 
 
-def paste_block(md: str) -> None:
-    """Paste-ready markdown. st.code gives a copy button for free."""
+def sub(text: str) -> None:
+    st.markdown(f'<div class="sub">{text}</div>', unsafe_allow_html=True)
+
+
+def writer(text: str) -> None:
+    st.markdown(f'<div class="writer">{text}</div>', unsafe_allow_html=True)
+
+
+def table(frame: pd.DataFrame, cols: list[str], height: int | None = None) -> None:
+    st.dataframe(
+        frame[cols], hide_index=True, width="stretch", height=height,
+        column_config={k: v for k, v in FMT.items() if k in cols},
+    )
+
+
+def paste(md: str) -> None:
     with st.expander("Copy for the post"):
         st.code(md.strip(), language="markdown")
 
 
-def need_history(have: int, want: int = fpl.MIN_HISTORY_DAYS) -> None:
-    st.info(
-        f"Not enough history yet — {have} daily snapshot(s) stored, need {want}+. "
-        "The logger adds one every night at 22:30 UTC; this fills itself in."
-    )
-
-
 # ---------- Load ----------
-with st.spinner("Fetching live FPL data..."):
+with st.spinner("Fetching live FPL data…"):
     try:
         bootstrap, fixtures = fpl.load_live()
         df = fpl.build_players(bootstrap, fixtures)
@@ -83,329 +144,245 @@ with st.spinner("Fetching live FPL data..."):
     except Exception as e:  # noqa: BLE001
         df, teams, ev, vintage, load_error = pd.DataFrame(), {}, None, {}, str(e)
 
+if load_error:
+    st.error(f"Could not reach the FPL API — {load_error}")
+    st.stop()
+
 season = fpl.current_season()
 history = fpl.load_history(season)
 hist_dates = fpl.history_dates(history)
+enough_history = len(hist_dates) >= fpl.MIN_HISTORY_DAYS
 
-# ---------- Header ----------
-gw_label = "GW {}".format(ev["id"]) if ev else "GW --"
-st.markdown(f'<div class="gw-badge">{gw_label}</div>', unsafe_allow_html=True)
-col_title, col_refresh = st.columns([5, 1])
-with col_title:
-    st.title("Gameweek Dossier")
-    if ev and ev.get("deadline_time"):
-        try:
-            dl = datetime.fromisoformat(ev["deadline_time"].replace("Z", "+00:00"))
-            left = dl - datetime.now(timezone.utc)
-            st.caption(
-                f"Deadline: {dl.strftime('%a %d %b, %H:%M UTC')} "
-                f"({left.days}d {left.seconds // 3600}h away)"
-                if left.total_seconds() > 0
-                else f"Deadline: {dl.strftime('%a %d %b, %H:%M UTC')} (passed)"
-            )
-        except Exception:  # noqa: BLE001
-            st.caption(f"Deadline: {ev['deadline_time']}")
-    st.caption("Internal prep sheet — one tab per blog section, in publishing order")
-with col_refresh:
-    if st.button("Refresh data"):
+# ---------- Masthead + status strip ----------
+gw = f"GW{ev['id']}" if ev else "GW —"
+top, refresh = st.columns([6, 1])
+with top:
+    st.markdown(
+        f'<div class="mast"><h1>Gameweek Dossier</h1><span class="gw">{gw}</span></div>',
+        unsafe_allow_html=True,
+    )
+with refresh:
+    if st.button("Refresh", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
-if load_error:
-    st.error(f"Could not reach the FPL API: {load_error}")
-    st.stop()
-
+chips = []
+if ev and ev.get("deadline_time"):
+    try:
+        dl = datetime.fromisoformat(ev["deadline_time"].replace("Z", "+00:00"))
+        left = dl - datetime.now(timezone.utc)
+        when = (f"{left.days}d {left.seconds // 3600}h" if left.total_seconds() > 0 else "passed")
+        chips.append(("Deadline", f"{dl.strftime('%a %d %b %H:%M')} · {when}", ""))
+    except Exception:  # noqa: BLE001
+        pass
+chips.append(("Snapshots", f"{len(hist_dates)} day{'s' if len(hist_dates) != 1 else ''}",
+              "ok" if enough_history else "warn"))
 if vintage.get("stale_performance"):
-    st.warning(f"⚠️ {vintage['note']}")
+    chips.append(("Season stats", "2025-26 until GW1", "warn"))
+    chips.append(("xPts", "provisional pre-season", "warn"))
 
-st.caption(
-    f"Snapshot history: **{len(hist_dates)}** day(s) stored for {season}"
-    + (f" ({hist_dates[0]} → {hist_dates[-1]})" if hist_dates else "")
+st.markdown(
+    '<div class="strip">' + "".join(
+        f'<span class="chip {tone}"><i>{label}</i><b>{value}</b></span>'
+        for label, value, tone in chips
+    ) + "</div>",
+    unsafe_allow_html=True,
 )
 
-TABS = ["👋 Opening", "🧢 Captain", "🔁 Buy/Sell/Hold", "🗺 Roadmap", "🎯 Differentials",
-        "🪑 Bench", "🔍 Scout", "👁 Eye Test", "🎲 50:50", "🃏 Chips", "🏁 Closing", "📋 Table"]
+TABS = ["Opening", "Captain", "Buy/Sell/Hold", "Roadmap", "Differentials", "Bench",
+        "Scout", "Eye Test", "50:50", "Chips", "Closing", "All players"]
 t = st.tabs(TABS)
 
-# ---------- 1. Opening ----------
+# ---------- Opening ----------
 with t[0]:
-    target("Opening")
-    human_only(
-        "No data by design. Hook the reader — a self-deprecating line about last "
-        "week's rank, a joke about the state of the game, or a tease of what's coming. "
-        "Conversational, like catching up with a mate."
-    )
-    st.caption(
-        "Once the calls ledger exists this tab will hand you last week's callback "
-        "automatically: what we said, and what actually happened."
-    )
+    head("Opening")
+    writer("Hook the reader. Self-deprecating line about last week, a joke about "
+           "the state of the game, or a tease of what's coming.")
 
-# ---------- 2. Captain ----------
+# ---------- Captain ----------
 with t[1]:
-    target("Captain")
-    st.caption(
-        "Ranked by FPL's own expected points (`ep_next`) — the only forward-looking "
-        "number available, and the reason `form` is not used here (it reads 0.0 for "
-        "every player until the season starts)."
-    )
-    if vintage.get("stale_performance"):
-        st.warning(
-            "⚠️ `ep_next` is **coarse pre-season** — values bunch at 4.0/3.3/2.8/2.0 with "
-            "heavy ties, so this ordering is close to arbitrary until GW1. Treat it as a "
-            "shortlist, not a ranking. Ties break on ownership as a rough quality proxy."
-        )
-    cap_pos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"], default=["MID", "FWD"],
-                             help="Captains are almost always mids and forwards.")
-    caps = df[df["Available"] & df["Pos"].isin(cap_pos)] \
-        .sort_values(["xP next", "Own %"], ascending=[False, False]).head(12)
-    st.dataframe(
-        caps[["Player", "Team", "Pos", "Price", "xP next", "Own %", "Next 5 FDR", "Fixtures"]],
-        hide_index=True, use_container_width=True,
-    )
-    top4 = caps.head(4)
-    paste_block("\n".join(
-        f"{i}. **{r['Player']}** ({r['Team']}) — xP {r['xP next']:.1f}, "
-        f"{r['Own %']:.1f}% owned, next: {r['Fixtures'].split(' ')[0] if r['Fixtures'] else 'TBC'}"
-        for i, (_, r) in enumerate(top4.iterrows(), 1)
-    ))
+    head("Captain")
+    pos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"],
+                         default=["MID", "FWD"], label_visibility="collapsed")
+    caps = df[df["Available"] & df["Pos"].isin(pos)] \
+        .sort_values(["xP next", "Own %"], ascending=[False, False]).head(10)
+    table(caps, ["Player", "Team", "Price", "xP next", "Own %", "Fixtures"])
+    paste("\n".join(
+        f"{i}. **{r['Player']}** ({r['Team']}) — xPts {r['xP next']:.1f}, {r['Own %']:.1f}% owned"
+        for i, (_, r) in enumerate(caps.head(4).iterrows(), 1)))
 
-# ---------- 3. Buy / Sell / Hold ----------
+# ---------- Buy / Sell / Hold ----------
 with t[2]:
-    target("Buy / Sell / Hold")
-    st.caption("The template asks for *price and ownership context* — that is this tab.")
-
+    head("Buy / Sell / Hold")
     price = fpl.movement(history, "now_cost", days=7)
     owned = fpl.movement(history, "selected_by_percent", days=7)
 
     if price.empty:
-        need_history(len(hist_dates))
+        note(f"Price movement needs {fpl.MIN_HISTORY_DAYS}+ daily snapshots — "
+             f"{len(hist_dates)} stored. Fills in nightly.")
     else:
-        merged = price.merge(df[["id", "Player", "Team", "Price"]], on="id", how="inner")
-        merged["Δ price"] = merged["delta"] / 10
-        movers = merged[merged["delta"] != 0].sort_values("delta", ascending=False)
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("Risers")
-            st.dataframe(movers.head(10)[["Player", "Team", "Price", "Δ price"]],
-                         hide_index=True, use_container_width=True)
-        with c2:
-            st.subheader("Fallers")
-            st.dataframe(movers.tail(10).sort_values("delta")[["Player", "Team", "Price", "Δ price"]],
-                         hide_index=True, use_container_width=True)
+        m = price.merge(df[["id", "Player", "Team", "Price"]], on="id")
+        m["Δ price"] = m["delta"] / 10
+        m = m[m["delta"] != 0].sort_values("delta", ascending=False)
+        a, b = st.columns(2)
+        with a:
+            sub("Risers")
+            table(m.head(8), ["Player", "Team", "Price", "Δ price"])
+        with b:
+            sub("Fallers")
+            table(m.tail(8).sort_values("delta"), ["Player", "Team", "Price", "Δ price"])
 
-    st.subheader("Newly flagged")
+    sub("Flagged & widely owned")
     flagged = df[(~df["Available"]) & (df["Own %"] >= 1.0)].sort_values("Own %", ascending=False)
     if flagged.empty:
-        st.caption("Nobody widely owned is currently flagged.")
+        note("Nobody above 1% ownership is currently flagged.")
     else:
-        st.dataframe(flagged[["Player", "Team", "Own %", "Flag", "news"]].head(15),
-                     hide_index=True, use_container_width=True)
+        table(flagged.head(10), ["Player", "Team", "Own %", "Flag"])
 
     if not owned.empty:
-        st.subheader("Ownership swings (7d)")
-        osw = owned.merge(df[["id", "Player", "Team"]], on="id", how="inner")
-        osw = osw.reindex(osw["delta"].abs().sort_values(ascending=False).index)
-        osw["Δ own %"] = osw["delta"].round(1)
-        st.dataframe(osw.head(10)[["Player", "Team", "then", "now", "Δ own %"]],
-                     hide_index=True, use_container_width=True)
+        sub("Ownership swings · 7 days")
+        o = owned.merge(df[["id", "Player", "Team"]], on="id")
+        o["Δ own"] = o["delta"].round(1)
+        o = o.reindex(o["delta"].abs().sort_values(ascending=False).index)
+        table(o.head(8), ["Player", "Team", "Δ own"])
 
-# ---------- 4. Transfer Roadmap ----------
+# ---------- Roadmap ----------
 with t[3]:
-    target("Transfer Roadmap")
-    st.caption(
-        "Fixture swings are the engine of a roadmap: which teams' runs turn good "
-        "over the next few gameweeks. Averages the next 5 fixtures' difficulty."
-    )
+    head("Transfer Roadmap")
     runs = fpl.team_fixtures(fixtures, horizon=5)
-    rows = []
-    for tid, fx in runs.items():
-        if not fx:
-            continue
-        rows.append({
-            "Team": teams.get(tid, {}).get("short_name", "?"),
-            "Next 5 FDR": round(sum(f[3] for f in fx) / len(fx), 2),
-            "Fixtures": " ".join(
-                f"{teams.get(o, {}).get('short_name', '?')}{'(H)' if h else '(A)'}"
-                for _, o, h, _ in fx
-            ),
-        })
-    ticker = pd.DataFrame(rows).sort_values("Next 5 FDR")
-    st.dataframe(ticker, hide_index=True, use_container_width=True)
-    paste_block("\n".join(
-        f"- **{r['Team']}** (FDR {r['Next 5 FDR']}): {r['Fixtures']}"
-        for _, r in ticker.head(5).iterrows()
-    ))
+    ticker = pd.DataFrame([
+        {"Team": teams.get(tid, {}).get("short_name", "?"),
+         "Next 5 FDR": round(sum(f[3] for f in fx) / len(fx), 2),
+         "Fixtures": " ".join(f"{teams.get(o, {}).get('short_name', '?')}"
+                              f"{'(H)' if h else '(A)'}" for _, o, h, _ in fx)}
+        for tid, fx in runs.items() if fx
+    ]).sort_values("Next 5 FDR")
+    table(ticker, ["Team", "Next 5 FDR", "Fixtures"], height=420)
+    paste("\n".join(f"- **{r['Team']}** (FDR {r['Next 5 FDR']}): {r['Fixtures']}"
+                    for _, r in ticker.head(5).iterrows()))
 
-# ---------- 5. Differentials ----------
+# ---------- Differentials ----------
 with t[4]:
-    target("Differentials")
-    c1, c2 = st.columns([2, 3])
-    with c1:
-        own_cap = st.slider("Ownership ceiling (%)", 1.0, 25.0, 10.0, 0.5)
-    with c2:
-        diff_pos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"],
-                                  default=["DEF", "MID", "FWD"], key="diff_pos",
-                                  help="Keepers are rarely the differential story.")
-    diffs = df[(df["Own %"] < own_cap) & df["Available"] & df["Pos"].isin(diff_pos)] \
-        .sort_values(["xP next", "Own %"], ascending=[False, True]).head(15)
-    st.dataframe(
-        diffs[["Player", "Team", "Pos", "Price", "Own %", "xP next", "Next 5 FDR", "Fixtures"]],
-        hide_index=True, use_container_width=True,
-    )
-
-    owned = fpl.movement(history, "selected_by_percent", days=7)
-    if owned.empty:
-        st.caption(
-            "⏳ Ownership *direction* needs a few days of snapshots. It matters: a player "
-            "at 8% and climbing is a very different call from 8% and flat, and only the "
-            "stored history knows which one you are looking at."
-        )
-    else:
-        trend = diffs.merge(owned[["id", "delta"]], on="id", how="left")
-        trend["Δ own 7d"] = trend["delta"].round(1)
-        st.dataframe(trend[["Player", "Team", "Own %", "Δ own 7d", "xP next"]].head(10),
-                     hide_index=True, use_container_width=True)
-
-    paste_block("\n".join(
-        f"{i}. **{r['Player']}** ({r['Own %']:.1f}%) — xP {r['xP next']:.1f}, {r['Team']}"
-        for i, (_, r) in enumerate(diffs.head(3).iterrows(), 1)
-    ))
-
-# ---------- 6. Bench Order ----------
-with t[5]:
-    target("Bench Order")
-    st.caption(
-        "For the reader's bench, not ours — the cheap players almost everyone owns. "
-        "An autosub only fires for a bench player who **actually played**: a bench1 who "
-        "got 0 minutes is skipped, not blocking. So order by expected points among "
-        "those likely to play, with the keeper ranked separately (a bench GK only ever "
-        "subs for the starting GK)."
-    )
-    st.caption("Currently weighted toward **nailed-on** starters — say the word to flip it toward upside.")
-
-    fodder = df[(df["Price"] <= 4.5) & (df["Own %"] >= 0.5)].copy()
-    fodder["Nailed"] = fodder["Starts"]
-    fodder = fodder.sort_values(["Available", "Nailed", "xP next"], ascending=[False, False, False])
-
+    head("Differentials")
     c1, c2 = st.columns([1, 2])
     with c1:
-        st.subheader("Bench GK")
-        st.dataframe(fodder[fodder["Pos"] == "GKP"].head(5)[
-            ["Player", "Team", "Price", "Own %", "xP next", "Flag"]],
-            hide_index=True, use_container_width=True)
+        cap = st.slider("Ownership ceiling", 1.0, 25.0, 10.0, 0.5,
+                        label_visibility="collapsed")
     with c2:
-        st.subheader("Outfield bench")
-        st.dataframe(fodder[fodder["Pos"] != "GKP"].head(10)[
-            ["Player", "Team", "Pos", "Price", "Own %", "Starts", "xP next", "Flag"]],
-            hide_index=True, use_container_width=True)
+        dpos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"],
+                              default=["DEF", "MID", "FWD"], key="dpos",
+                              label_visibility="collapsed")
+    diffs = df[(df["Own %"] < cap) & df["Available"] & df["Pos"].isin(dpos)] \
+        .sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
 
-    if vintage.get("stale_performance"):
-        st.caption("⚠️ `Starts` and `Mins` are last season's until GW1, so 'nailed' is a 2025-26 read.")
+    trend = fpl.movement(history, "selected_by_percent", days=7)
+    if not trend.empty:
+        diffs = diffs.merge(trend[["id", "delta"]], on="id", how="left")
+        diffs["Δ own"] = diffs["delta"].round(1)
+        table(diffs, ["Player", "Team", "Price", "Own %", "Δ own", "xP next", "Fixtures"])
+    else:
+        note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
+             f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
+        table(diffs, ["Player", "Team", "Price", "Own %", "xP next", "Fixtures"])
 
-# ---------- 7. Scout Selection ----------
+    paste("\n".join(f"{i}. **{r['Player']}** ({r['Own %']:.1f}%) — {r['Team']}, xPts {r['xP next']:.1f}"
+                    for i, (_, r) in enumerate(diffs.head(3).iterrows(), 1)))
+
+# ---------- Bench ----------
+with t[5]:
+    head("Bench Order")
+    note("Cheap, widely-owned bench fodder — ranked toward nailed-on starters.")
+    fodder = df[(df["Price"] <= 4.5) & (df["Own %"] >= 0.5)] \
+        .sort_values(["Available", "Starts", "xP next"], ascending=[False, False, False])
+    a, b = st.columns([1, 2])
+    with a:
+        sub("Goalkeeper")
+        table(fodder[fodder["Pos"] == "GKP"].head(5),
+              ["Player", "Team", "Price", "Own %", "Flag"])
+    with b:
+        sub("Outfield")
+        table(fodder[fodder["Pos"] != "GKP"].head(10),
+              ["Player", "Team", "Pos", "Price", "Own %", "Starts", "Flag"])
+
+# ---------- Scout ----------
 with t[6]:
-    target("Scout Selection")
-    st.caption("The template asks for fixture run, price trend and minutes trend.")
-
+    head("Scout Selection")
     sp = df[df.apply(fpl.set_piece_roles, axis=1) != ""].copy()
     sp["Set pieces"] = sp.apply(fpl.set_piece_roles, axis=1)
-    st.subheader("Set-piece takers (first choice)")
-    st.dataframe(
-        sp.sort_values("Own %", ascending=False)[
-            ["Player", "Team", "Pos", "Price", "Own %", "Set pieces", "Next 5 FDR"]].head(20),
-        hide_index=True, use_container_width=True,
-    )
+    sub("Set-piece takers")
+    table(sp.sort_values("Own %", ascending=False).head(15),
+          ["Player", "Team", "Price", "Own %", "Set pieces", "Next 5 FDR"])
 
-    st.subheader("Price trend")
-    price = fpl.movement(history, "now_cost", days=14)
-    if price.empty:
-        need_history(len(hist_dates))
+    sub("Price trend · 14 days")
+    pt = fpl.movement(history, "now_cost", days=14)
+    if pt.empty:
+        note(f"Needs {fpl.MIN_HISTORY_DAYS}+ daily snapshots — {len(hist_dates)} stored.")
     else:
-        pt = price.merge(df[["id", "Player", "Team", "Price", "Own %"]], on="id", how="inner")
+        pt = pt.merge(df[["id", "Player", "Team", "Price", "Own %"]], on="id")
         pt["Δ price 14d"] = pt["delta"] / 10
-        st.dataframe(pt[pt["delta"] != 0].sort_values("delta", ascending=False)
-                     .head(12)[["Player", "Team", "Price", "Δ price 14d", "Own %"]],
-                     hide_index=True, use_container_width=True)
+        table(pt[pt["delta"] != 0].sort_values("delta", ascending=False).head(10),
+              ["Player", "Team", "Price", "Δ price 14d", "Own %"])
 
-# ---------- 8. Eye Test ----------
+# ---------- Eye Test ----------
 with t[7]:
-    target("Eye Test")
-    human_only(
-        "No data by design, and deliberately so. This is the practitioner's read — "
-        "body language, tactical role changes, a manager's substitution pattern, "
-        "movement off the ball. Automating the mechanical sections exists to buy "
-        "back time for this one."
-    )
+    head("Eye Test")
+    writer("No data by design. Body language, tactical role changes, substitution "
+           "patterns, movement off the ball — the read the numbers can't give you.")
 
-# ---------- 9. 50:50 Calls ----------
+# ---------- 50:50 ----------
 with t[8]:
-    target("50:50 Calls")
+    head("50:50 Calls")
     names = df.sort_values("Own %", ascending=False)["Player"].tolist()
-    c1, c2 = st.columns(2)
-    with c1:
-        a = st.selectbox("Option A", names, index=0)
-    with c2:
-        b = st.selectbox("Option B", names, index=min(1, len(names) - 1))
-    cols = ["Player", "Team", "Pos", "Price", "Own %", "xP next", "Next 5 FDR",
-            "Starts", "Pts", "Flag", "Fixtures"]
-    st.dataframe(df[df["Player"].isin([a, b])][cols], hide_index=True, use_container_width=True)
+    a, b = st.columns(2)
+    with a:
+        pa = st.selectbox("A", names, index=0, label_visibility="collapsed")
+    with b:
+        pb = st.selectbox("B", names, index=min(1, len(names) - 1), label_visibility="collapsed")
+    table(df[df["Player"].isin([pa, pb])],
+          ["Player", "Team", "Pos", "Price", "Own %", "xP next", "Next 5 FDR", "Flag", "Fixtures"])
 
-# ---------- 10. Chip Strategy ----------
+# ---------- Chips ----------
 with t[9]:
-    target("Chip Strategy")
-    st.caption("Doubles and blanks in the fixture list — the whole basis of chip timing.")
+    head("Chip Strategy")
     counts = fpl.fixture_counts(fixtures, teams)
     if counts.empty:
-        st.caption("No upcoming fixtures scheduled.")
+        note("No upcoming fixtures scheduled.")
     else:
-        pivot = counts.pivot_table(index="Team", columns="event", values="fixtures",
-                                   fill_value=0).astype(int)
         doubles = counts[counts["fixtures"] >= 2]
         if doubles.empty:
-            st.caption("No double gameweeks currently scheduled.")
+            note("No double gameweeks currently scheduled.")
         else:
-            st.subheader("Doubles")
-            st.dataframe(doubles[["event", "Team", "fixtures"]], hide_index=True)
-        st.subheader("Fixtures per gameweek")
-        st.dataframe(pivot, use_container_width=True)
+            sub("Doubles")
+            st.dataframe(doubles[["event", "Team", "fixtures"]], hide_index=True, width="stretch")
+        sub("Fixtures per gameweek")
+        st.dataframe(
+            counts.pivot_table(index="Team", columns="event", values="fixtures",
+                               fill_value=0).astype(int),
+            width="stretch", height=400,
+        )
 
-# ---------- 11. Closing ----------
+# ---------- Closing ----------
 with t[10]:
-    target("Closing")
-    human_only(
-        "No data by design. Recap the headline call in a line, a bit of self-aware "
-        "humour about how confident you are, and tease next week if there is "
-        "something worth teasing."
-    )
+    head("Closing")
+    writer("Recap the headline call in a line, a bit of self-aware humour about "
+           "how confident you are, and tease next week if there's something worth teasing.")
 
-# ---------- Utility table ----------
+# ---------- All players ----------
 with t[11]:
     c1, c2, c3 = st.columns([2, 3, 2])
     with c1:
-        pos = st.selectbox("Position", ["All", "GKP", "DEF", "MID", "FWD"])
+        p = st.selectbox("Position", ["All", "GKP", "DEF", "MID", "FWD"])
     with c2:
-        q = st.text_input("Search player or team", "")
+        q = st.text_input("Search", "", placeholder="Player or team")
     with c3:
-        avail = st.checkbox("Available only", value=False)
-
-    view = df.copy()
-    if pos != "All":
-        view = view[view["Pos"] == pos]
-    if avail:
-        view = view[view["Available"]]
+        only = st.checkbox("Available only")
+    v = df.copy()
+    if p != "All":
+        v = v[v["Pos"] == p]
+    if only:
+        v = v[v["Available"]]
     if q:
         ql = q.lower()
-        view = view[view["Player"].str.lower().str.contains(ql)
-                    | view["Team"].str.lower().str.contains(ql)]
-
-    st.dataframe(
-        view[["Player", "Team", "Pos", "Price", "Own %", "xP next", "Form", "xGI",
-              "G+A", "Over/Under", "Next 5 FDR", "Net transfers", "Flag"]]
-        .sort_values("xP next", ascending=False),
-        hide_index=True, use_container_width=True, height=560,
-    )
-
-st.caption(
-    "Live data from the official FPL API; trends from the logger's daily snapshots. "
-    "Internal tool — verify anything published against fantasy.premierleague.com."
-)
+        v = v[v["Player"].str.lower().str.contains(ql) | v["Team"].str.lower().str.contains(ql)]
+    table(v.sort_values("xP next", ascending=False),
+          ["Player", "Team", "Pos", "Price", "Own %", "xP next", "Next 5 FDR", "Flag"], height=560)
