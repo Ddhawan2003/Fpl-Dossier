@@ -72,6 +72,25 @@ h1,h2,h3 { font-family:'Space Grotesk', sans-serif !important; letter-spacing:-0
 .stTabs [data-baseweb="tab-list"] { gap:1px; border-bottom:1px solid var(--line); }
 .stTabs [data-baseweb="tab"] { padding:7px 13px; font-size:0.78rem; }
 [data-testid="stDataFrame"] { font-size:0.82rem; }
+
+/* --- ticker legend: the one key the grid needs ------------------------ */
+.legend { display:flex; align-items:center; gap:3px; margin:8px 0 2px; }
+.legend span { width:26px; height:16px; border-radius:2px; font-size:0.62rem;
+               color:var(--ink); display:flex; align-items:center; justify-content:center; }
+.legend em { font-style:normal; color:var(--muted); font-size:0.68rem;
+             letter-spacing:0.08em; margin-left:8px; text-transform:uppercase; }
+
+/* --- quality floor ---------------------------------------------------- */
+:focus-visible { outline:2px solid var(--gold); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important; transition-duration:0.01ms !important; }
+}
+@media (max-width: 640px) {
+  .block-container { padding-top:1.4rem; }
+  .mast h1 { font-size:1.25rem; }
+  .head { flex-direction:column; align-items:flex-start; gap:2px; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -98,6 +117,32 @@ FMT = {
     "Flag": st.column_config.TextColumn("Status"),
     "Starts": st.column_config.NumberColumn("Starts", format="%d"),
 }
+
+
+# FPL's own fixture-difficulty ramp, darkened to sit on a near-black ground.
+# The hues are kept (green easy → red hard) because an FPL manager already reads
+# that scale without a legend; only the luminance is adapted to the dark theme.
+FDR_RAMP = {1: "#0e6b3d", 2: "#1a8a52", 3: "#3a4150", 4: "#9c3b3b", 5: "#6b1f2e"}
+
+
+def fdr_styles(values: pd.DataFrame) -> pd.DataFrame:
+    """CSS per cell for the ticker, keyed off real difficulty integers.
+
+    Built with an explicit loop rather than DataFrame.map, which only exists in
+    pandas >= 2.1 while requirements allow >= 2.0.
+    """
+    out = pd.DataFrame("", index=values.index, columns=values.columns)
+    for row in values.index:
+        for col in values.columns:
+            v = values.loc[row, col]
+            if pd.isna(v):
+                out.loc[row, col] = "color:#5a5750;"  # blank gameweek
+            else:
+                out.loc[row, col] = (
+                    f"background-color:{FDR_RAMP[min(5, max(1, int(round(v))))]};"
+                    "color:#eeece4;"
+                )
+    return out
 
 
 def head(name: str) -> None:
@@ -257,17 +302,26 @@ with t[2]:
 # ---------- Roadmap ----------
 with t[3]:
     head("Transfer Roadmap")
-    runs = fpl.team_fixtures(fixtures, horizon=5)
-    ticker = pd.DataFrame([
-        {"Team": teams.get(tid, {}).get("short_name", "?"),
-         "Next 5 FDR": round(sum(f[3] for f in fx) / len(fx), 2),
-         "Fixtures": " ".join(f"{teams.get(o, {}).get('short_name', '?')}"
-                              f"{'(H)' if h else '(A)'}" for _, o, h, _ in fx)}
-        for tid, fx in runs.items() if fx
-    ]).sort_values("Next 5 FDR")
-    table(ticker, ["Team", "Next 5 FDR", "Fixtures"], height=420)
-    paste("\n".join(f"- **{r['Team']}** (FDR {r['Next 5 FDR']}): {r['Fixtures']}"
-                    for _, r in ticker.head(5).iterrows()))
+    labels, values = fpl.fixture_ticker(fixtures, teams, horizon=6)
+    if labels.empty:
+        note("No upcoming fixtures scheduled.")
+    else:
+        st.dataframe(
+            labels.style.apply(lambda _: fdr_styles(values), axis=None),
+            width="stretch", height=min(760, 38 * len(labels) + 40),
+        )
+        st.markdown(
+            '<div class="legend">'
+            + "".join(f'<span style="background:{FDR_RAMP[i]}">{i}</span>' for i in range(1, 6))
+            + "<em>easier → harder</em></div>",
+            unsafe_allow_html=True,
+        )
+        best = values.mean(axis=1).sort_values().head(5)
+        paste("\n".join(
+            f"- **{team}** (FDR {score:.1f}): "
+            + ", ".join(labels.loc[team].tolist())
+            for team, score in best.items()
+        ))
 
 # ---------- Differentials ----------
 with t[4]:

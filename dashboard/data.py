@@ -141,6 +141,58 @@ def team_fixtures(fixtures: list, horizon: int = 5) -> dict:
     return {tid: v[:horizon] for tid, v in out.items()}
 
 
+def fixture_ticker(fixtures: list, teams: dict, horizon: int = 6):
+    """Teams x next N gameweeks, as (opponent labels, difficulty values).
+
+    The fixture ticker is the most native artifact in FPL's world -- a manager
+    reads a coloured grid of upcoming opponents at a glance, without a legend.
+    Returning the difficulty alongside the label lets the caller colour it on
+    FPL's own 1-5 ramp, so the colour encodes a real API integer rather than
+    decorating the table.
+
+    Doubles collapse into one cell ("ARS(H) CHE(A)") carrying the mean
+    difficulty; blanks stay empty, which is the information.
+    """
+    upcoming = sorted(
+        (f for f in fixtures if not f.get("finished") and f.get("event") is not None),
+        key=lambda f: f["event"],
+    )
+    if not upcoming:
+        return pd.DataFrame(), pd.DataFrame()
+
+    events = sorted({f["event"] for f in upcoming})[:horizon]
+    cells: dict[int, dict[int, list]] = {}
+    for f in upcoming:
+        if f["event"] not in events:
+            continue
+        cells.setdefault(f["team_h"], {}).setdefault(f["event"], []).append(
+            (teams.get(f["team_a"], {}).get("short_name", "?"), "H", f["team_h_difficulty"])
+        )
+        cells.setdefault(f["team_a"], {}).setdefault(f["event"], []).append(
+            (teams.get(f["team_h"], {}).get("short_name", "?"), "A", f["team_a_difficulty"])
+        )
+
+    cols = [f"GW{e}" for e in events]
+    labels, values = {}, {}
+    for tid, by_event in cells.items():
+        name = teams.get(tid, {}).get("short_name", "?")
+        labels[name] = []
+        values[name] = []
+        for e in events:
+            fx = by_event.get(e, [])
+            if not fx:
+                labels[name].append("—")
+                values[name].append(float("nan"))
+            else:
+                labels[name].append(" ".join(f"{o}({h})" for o, h, _ in fx))
+                values[name].append(sum(d for _, _, d in fx) / len(fx))
+
+    label_df = pd.DataFrame.from_dict(labels, orient="index", columns=cols)
+    value_df = pd.DataFrame.from_dict(values, orient="index", columns=cols)
+    order = value_df.mean(axis=1).sort_values().index
+    return label_df.loc[order], value_df.loc[order]
+
+
 def fixture_counts(fixtures: list, teams: dict) -> pd.DataFrame:
     """Fixtures per team per gameweek -- 2 is a double, 0 a blank."""
     rows = []
