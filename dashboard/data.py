@@ -49,6 +49,12 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # flat line, which would be worse than saying "not enough history yet".
 MIN_HISTORY_DAYS = 2
 
+# Over/underperformance against expected goals is noise in small samples: three
+# games of xG says nothing, and shown unguarded it flags every hot starter as
+# "due a regression". Roughly five full matches is the floor where the number
+# starts to mean something.
+MIN_MINUTES_FOR_UNDERLYING = 450
+
 
 # --------------------------------------------------------------------------
 # Live API
@@ -239,7 +245,13 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
             "Mins": p.get("minutes") or 0,
             "Starts": p.get("starts") or 0,
             "Pts": p.get("total_points") or 0,
+            "xG": float(p.get("expected_goals") or 0),
+            "xA": float(p.get("expected_assists") or 0),
             "xGI": float(p.get("expected_goal_involvements") or 0),
+            "xGC": float(p.get("expected_goals_conceded") or 0),
+            "Goals": p.get("goals_scored") or 0,
+            "Assists": p.get("assists") or 0,
+            "CS": p.get("clean_sheets") or 0,
             "G+A": (p.get("goals_scored") or 0) + (p.get("assists") or 0),
             "Next 5 FDR": round(fdr, 2) if fdr is not None else None,
             "Fixtures": opponents,
@@ -253,10 +265,33 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
         })
 
     df = pd.DataFrame(rows)
+
+    # Derived at READ time, never stored. The logger keeps only raw API fields,
+    # so every number below is reproducible from the record by subtraction or
+    # division -- which is the point of the rule, not a limitation of it.
     df["Over/Under"] = (df["G+A"] - df["xGI"]).round(2)
+
+    # .where() leaves float NaN for zero-minute players, keeping these columns
+    # numeric. pd.NA would flip them to object dtype, and NAType has no
+    # __round__, so the whole frame would blow up on the next line.
+    per90 = (df["Mins"] / 90).where(df["Mins"] > 0)
+    for out, src in [("xGI/90", "xGI"), ("xG/90", "xG"),
+                     ("xA/90", "xA"), ("xGC/90", "xGC")]:
+        df[out] = (df[src] / per90).round(2)
+
+    # Below the minutes floor the comparison is noise, so blank it rather than
+    # print a number nobody should act on.
+    thin = df["Mins"] < MIN_MINUTES_FOR_UNDERLYING
+    df.loc[thin, ["Over/Under", "xGI/90", "xG/90", "xA/90", "xGC/90"]] = float("nan")
+
     df["Available"] = df["status"] == "a"
     df["Flag"] = df.apply(_flag_label, axis=1)
     return df
+
+
+def underlying_sample(df: pd.DataFrame) -> pd.DataFrame:
+    """Players with enough minutes for expected-goals numbers to mean anything."""
+    return df[df["Mins"] >= MIN_MINUTES_FOR_UNDERLYING]
 
 
 def _flag_label(r) -> str:

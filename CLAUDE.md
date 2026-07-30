@@ -115,12 +115,13 @@ Two subtleties in that workflow that look like mistakes but are not:
   open 24 issues a day during an FPL outage. Each deadline gets multiple gate attempts.
 
 **The FPL API 403s requests from datacenter IPs** unless a browser `User-Agent` is sent.
-GitHub runners and Streamlit Cloud are both datacenter IPs. `logger/log_snapshot.py` carries
-one; `dashboard/app.py` does not (see "Known issues").
+GitHub runners and Streamlit Cloud are both datacenter IPs, a laptop is not — which is why a
+missing header fails *only* once deployed. Both `logger/log_snapshot.py` and
+`dashboard/data.py` carry the header; do not remove it from either.
 
 ## Snapshot schema semantics
 
-31 columns, identical in both records. The API exposes ~105 fields per player; the selection
+41 columns, identical in both records. The API exposes ~105 fields per player; the selection
 rule is "log it if it is point-in-time, or cheap context that makes the record
 self-contained." Traps that are not obvious from the header:
 
@@ -135,6 +136,23 @@ self-contained." Traps that are not obvious from the header:
 - Set-piece order fields **change mid-season**; the record is the only thing that will know
   when. They are populated *now* (64 players had a `penalties_order` on 2026-07-28) — do not
   assume they are empty off-season.
+- The **actuals + expected-goals group is a weaker case than the rest**, and the docs should
+  not oversell it. These are cumulative counters, so they *are* recoverable from
+  `element-summary/<id>/history`. They are logged to keep the record self-contained, to catch
+  Opta's retroactive revisions, and because they are free on a call we already make — not
+  because they would be lost.
+- **Log `expected_goals` and `expected_assists` separately, never only `xGI`.** Haaland is the
+  case: 27 goals vs 25.50 xG is normal finishing, but 8 assists vs 2.67 xA is a big
+  overperformance. Combined as xGI (+6.83) the two are indistinguishable and the real story
+  disappears.
+- Over/underperformance and every `_per_90` figure are **derived at read time in
+  `dashboard/data.py`**, never stored. Verified exactly reproducible: 28.17 xGI over 2953
+  minutes → 0.86, matching FPL's published per-90.
+- `MIN_MINUTES_FOR_UNDERLYING = 450` gates every expected-goals view. Below ~5 full matches
+  the numbers are noise and would flag every hot starter as "due a regression". Sub-floor
+  players get blank cells, not numbers.
+- **Deriving per-90: use `.where(mins > 0)`, not `.replace(0, pd.NA)`.** The latter flips the
+  column to object dtype and `NAType` has no `__round__`, which takes down the whole frame.
 - `transfers_in_event` / `transfers_out_event` **reset at each deadline**. Diffing them
   across a deadline boundary yields a large negative number — segment by `event`, or diff the
   cumulative `transfers_in` / `transfers_out` instead.
@@ -199,7 +217,7 @@ and CRLF would break the workflows' bash.
 Pre-season is the only real build runway; once the season starts the team's ~2–3 hrs/week
 goes to publishing. GW1 deadline: **2026-08-21T17:30:00Z**.
 
-**Done 2026-07-28:** schema widened to 31 columns; gap detector shipped; dashboard fetch bug
+**Done 2026-07-28/30:** schema widened to 41 columns; gap detector shipped; dashboard fetch bug
 fixed (browser UA + `raise_for_status()`); Streamlit Cloud entrypoint corrected and the app
 deploys; devcontainer and `dashboard/README.md` repointed; **dashboard rebuilt around the 11
 content sections**, read-only, with `dashboard/data.py` owning all data access.

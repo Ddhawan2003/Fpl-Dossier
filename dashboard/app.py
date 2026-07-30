@@ -116,6 +116,12 @@ FMT = {
     "Set pieces": st.column_config.TextColumn("Set pieces"),
     "Flag": st.column_config.TextColumn("Status"),
     "Starts": st.column_config.NumberColumn("Starts", format="%d"),
+    "xGI/90": st.column_config.NumberColumn("xGI/90", format="%.2f"),
+    "xG/90": st.column_config.NumberColumn("xG/90", format="%.2f"),
+    "xGC/90": st.column_config.NumberColumn("xGC/90", format="%.2f"),
+    "Over/Under": st.column_config.NumberColumn("vs xGI", format="%+.1f"),
+    "Mins": st.column_config.NumberColumn("Mins", format="%d"),
+    "G+A": st.column_config.NumberColumn("G+A", format="%d"),
 }
 
 
@@ -259,7 +265,10 @@ with t[1]:
                          default=["MID", "FWD"], label_visibility="collapsed")
     caps = df[df["Available"] & df["Pos"].isin(pos)] \
         .sort_values(["xP next", "Own %"], ascending=[False, False]).head(10)
-    table(caps, ["Player", "Team", "Price", "xP next", "Own %", "Fixtures"])
+    # xGI/90 sits next to xPts on purpose: FPL's projection runs about a point
+    # high on premiums, and this is the independent check on whether an
+    # expensive player is actually creating chances.
+    table(caps, ["Player", "Team", "Price", "xP next", "xGI/90", "Own %", "Fixtures"])
     paste("\n".join(
         f"{i}. **{r['Player']}** ({r['Team']}) — xPts {r['xP next']:.1f}, {r['Own %']:.1f}% owned"
         for i, (_, r) in enumerate(caps.head(4).iterrows(), 1)))
@@ -293,11 +302,18 @@ with t[2]:
         table(flagged.head(10), ["Player", "Team", "Own %", "Flag"])
 
     if not owned.empty:
-        sub("Ownership swings · 7 days")
-        o = owned.merge(df[["id", "Player", "Team"]], on="id")
-        o["Δ own"] = o["delta"].round(1)
-        o = o.reindex(o["delta"].abs().sort_values(ascending=False).index)
-        table(o.head(8), ["Player", "Team", "Δ own"])
+        with st.expander("Ownership swings · 7 days"):
+            o = owned.merge(df[["id", "Player", "Team"]], on="id")
+            o["Δ own"] = o["delta"].round(1)
+            o = o.reindex(o["delta"].abs().sort_values(ascending=False).index)
+            table(o.head(8), ["Player", "Team", "Δ own"])
+
+    with st.expander("Overperforming their underlying numbers"):
+        note("A question, not a verdict — elite finishers beat xG every season. "
+             f"Minimum {fpl.MIN_MINUTES_FOR_UNDERLYING} minutes played.")
+        hot = fpl.underlying_sample(df)
+        hot = hot[hot["Own %"] >= 1.0].sort_values("Over/Under", ascending=False).head(8)
+        table(hot, ["Player", "Team", "Mins", "G+A", "xGI", "Over/Under", "Next 5 FDR"])
 
 # ---------- Roadmap ----------
 with t[3]:
@@ -341,11 +357,19 @@ with t[4]:
     if not trend.empty:
         diffs = diffs.merge(trend[["id", "delta"]], on="id", how="left")
         diffs["Δ own"] = diffs["delta"].round(1)
-        table(diffs, ["Player", "Team", "Price", "Own %", "Δ own", "xP next", "Fixtures"])
+        table(diffs, ["Player", "Team", "Price", "Own %", "Δ own", "xP next", "xGI/90", "Next 5 FDR"])
     else:
         note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
              f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
-        table(diffs, ["Player", "Team", "Price", "Own %", "xP next", "Fixtures"])
+        table(diffs, ["Player", "Team", "Price", "Own %", "xP next", "xGI/90", "Next 5 FDR"])
+
+    with st.expander("Underperforming their underlying numbers · the 'he's due' case"):
+        note("Creating chances, returns not arriving yet. Low ownership plus fixtures "
+             "turning is the strongest differential argument there is.")
+        due = fpl.underlying_sample(df)
+        due = due[(due["Own %"] < cap) & due["Available"] & due["Pos"].isin(dpos)] \
+            .sort_values("Over/Under").head(8)
+        table(due, ["Player", "Team", "Price", "Own %", "G+A", "xGI", "Over/Under", "Next 5 FDR"])
 
     paste("\n".join(f"{i}. **{r['Player']}** ({r['Own %']:.1f}%) — {r['Team']}, xPts {r['xP next']:.1f}"
                     for i, (_, r) in enumerate(diffs.head(3).iterrows(), 1)))
@@ -374,6 +398,17 @@ with t[6]:
     sub("Set-piece takers")
     table(sp.sort_values("Own %", ascending=False).head(15),
           ["Player", "Team", "Price", "Own %", "Set pieces", "Next 5 FDR"])
+
+    with st.expander("Chance creation · xGI per 90"):
+        creators = fpl.underlying_sample(df)
+        creators = creators[creators["Available"]].sort_values("xGI/90", ascending=False).head(12)
+        table(creators, ["Player", "Team", "Pos", "Price", "Own %", "xGI/90", "Next 5 FDR"])
+
+    with st.expander("Defensive value · expected goals conceded per 90"):
+        backs = fpl.underlying_sample(df)
+        backs = backs[backs["Available"] & backs["Pos"].isin(["GKP", "DEF"])] \
+            .sort_values("xGC/90").head(10)
+        table(backs, ["Player", "Team", "Pos", "Price", "Own %", "CS", "xGC/90", "Next 5 FDR"])
 
     sub("Price trend · 14 days")
     pt = fpl.movement(history, "now_cost", days=14)

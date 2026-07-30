@@ -124,6 +124,28 @@ COLUMNS = [
     "event_points",          # points in the current event
     "total_points",          # season total to date
     "minutes",               # minutes played to date
+    "starts",                # times named in the XI -- the "nailed on" signal
+    # --- actual returns -----------------------------------------------------
+    # Unlike the fields above these are cumulative counters, so they ARE
+    # recoverable later from element-summary/<id>/history. They are logged for
+    # three smaller reasons: the record stays self-contained (no 600-request
+    # reconstruction), Opta revisions to past matches are captured as they
+    # happen, and they cost nothing on an API call we already make.
+    "goals_scored",
+    "assists",
+    "clean_sheets",
+    "goals_conceded",
+    "saves",
+    # --- underlying (expected) numbers --------------------------------------
+    # Paired with the actuals above, these give over/underperformance at READ
+    # time. The difference is deliberately not a column: it is a subtraction,
+    # and derived metrics do not belong in the record. Nor are the _per_90
+    # variants logged -- they are exactly reproducible from these and `minutes`
+    # (Haaland: 28.17 xGI / (2953/90) = 0.86, matching FPL's published figure).
+    "expected_goals",
+    "expected_assists",
+    "expected_goal_involvements",
+    "expected_goals_conceded",
     # --- FPL's own forecast: the most perishable data in the response -------
     # Once a gameweek is played, what was predicted beforehand is gone. Logging
     # it also gives a free benchmark to grade our own calls against.
@@ -264,6 +286,16 @@ def build_rows(data: dict, snapshot_utc: datetime, kind: str, event: dict | None
             "event_points": p.get("event_points", 0),
             "total_points": p.get("total_points", 0),
             "minutes": p.get("minutes", 0),
+            "starts": p.get("starts", 0),
+            "goals_scored": p.get("goals_scored", 0),
+            "assists": p.get("assists", 0),
+            "clean_sheets": p.get("clean_sheets", 0),
+            "goals_conceded": p.get("goals_conceded", 0),
+            "saves": p.get("saves", 0),
+            "expected_goals": raw(p.get("expected_goals")),
+            "expected_assists": raw(p.get("expected_assists")),
+            "expected_goal_involvements": raw(p.get("expected_goal_involvements")),
+            "expected_goals_conceded": raw(p.get("expected_goals_conceded")),
             "ep_this": raw(p.get("ep_this")),
             "ep_next": raw(p.get("ep_next")),
         })

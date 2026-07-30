@@ -138,12 +138,12 @@ The gate compares timestamps as **strings**, not via jq's `fromdateiso8601` —
 that function is backed by `strptime` and is missing from some jq builds. A gate
 that silently errors is a gate that never fires.
 
-### 4c. Snapshot columns (both records, 31 columns, identical schema)
+### 4c. Snapshot columns (both records, 41 columns, identical schema)
 
 All raw FPL fields except the three capture-metadata columns. `now_cost` /
 `cost_change_*` are integer tenths (`75` = £7.5) — division happens at read time.
 
-The API exposes ~105 fields per player; the logger takes 31. The selection rule:
+The API exposes ~105 fields per player; the logger takes 41. The selection rule:
 log it if it is **point-in-time** (overwritten the moment it changes, so it can
 never be recovered) or cheap context that makes the record self-contained.
 Everything else is derivable after the fact and is skipped on purpose.
@@ -170,12 +170,36 @@ Everything else is derivable after the fact and is skipped on purpose.
 | `direct_freekicks_order` | as above |
 | `corners_and_indirect_freekicks_order` | as above |
 | `form` | rolling 30-day figure the API recomputes continuously |
-| `event_points`, `total_points`, `minutes` | scoring state to date |
+| `event_points`, `total_points`, `minutes`, `starts` | scoring state to date; `starts` is the "nailed on" signal |
+| `goals_scored`, `assists`, `clean_sheets`, `goals_conceded`, `saves` | actual returns |
+| `expected_goals`, `expected_assists`, `expected_goal_involvements`, `expected_goals_conceded` | the underlying numbers those actuals are measured against |
 | `ep_this`, `ep_next` | **FPL's own expected-points forecast.** The most perishable data in the response: once a gameweek is played, what was predicted beforehand is gone. Also a free benchmark to grade our calls against. |
 
 Live sample (2026-07-28): `ep_next` populated for 563/563 (Haaland 4.0);
 `news_added` for 50; `penalties_order` for 64 (Haaland `1`);
 `ep_this` / `chance_of_playing_this_round` empty, correct off-season.
+
+**The actuals + expected group is a different category, and the docs should not
+oversell it.** Unlike `ep_next` (a forecast, gone once the match is played) or
+`news_added` (overwritten the instant news changes), these are **cumulative
+counters and therefore recoverable** from `element-summary/<id>/history`. They
+are logged for three smaller reasons: the record stays self-contained (no
+~600-request reconstruction per gameweek), Opta's retroactive revisions to past
+matches are captured as they happen, and they cost nothing on a call we already
+make. Adding them in October would have lost nothing — that is not true of the
+groups above.
+
+**Over/underperformance is deliberately not a column**, nor are the `_per_90`
+variants. Both are derived, and rule 2 keeps derived values out of the record.
+They are exactly reproducible at read time: Haaland's 28.17 xGI over 2953
+minutes gives `28.17 / (2953/90) = 0.86`, matching FPL's own published figure to
+the decimal.
+
+**Log xG and xA separately, not just xGI.** Haaland is the worked example: 27
+goals against 25.50 xG is barely overperforming, but 8 assists against 2.67 xA
+is a large overperformance. Combined as xGI (+6.83) the two are indistinguishable
+and the actual story — the finishing is normal, the assists are the outlier — is
+lost.
 
 ### 4d. The gap detector — `logger/check_gaps.py` + `gap-check.yml`
 
@@ -323,6 +347,37 @@ captain candidates. Captain therefore defaults to MID/FWD and Differentials
 excludes GKP, both adjustable, with a warning that the ordering is close to
 arbitrary until GW1. It becomes a real ranking once the season starts.
 
+### 5c. Underlying numbers in the workbench (added 2026-07-30)
+
+Over/underperformance vs expected goals is wired into the four sections that
+already ask for it, **not a new tab**: Buy/Sell/Hold (overperformers = the sell
+case, the old "Regression watch" reborn where it belongs), Differentials
+(underperformers = the "he's due" case), Scout Selection (xGI/90 for chance
+creation, xGC/90 for defensive value) and Captain (xGI/90 alongside xPts).
+
+xGI/90 sits next to xPts on the Captain tab for a measured reason: the backtest
+in §10 shows FPL's projection runs ~1 point high on premiums, and xGI/90 is an
+independent check on whether an expensive player is actually creating chances.
+
+**Two guards, both load-bearing:**
+- `MIN_MINUTES_FOR_UNDERLYING = 450` in `dashboard/data.py`. Below roughly five
+  full matches these numbers are noise; shown unguarded in September they flag
+  every hot starter as "due a regression" purely because three games of xG says
+  nothing. Players under the floor get blank cells, not numbers.
+- The copy says **"a question, not a verdict"**, because persistent
+  overperformance is not always luck — elite finishers beat xG every season.
+  Distinguishing lucky from good needs a multi-season prior, which is precisely
+  what the logger is accumulating.
+
+All five new blocks sit behind collapsed expanders. The workbench had grown to 18
+tables and the busiest tab was stacking five; secondary analysis is one click
+away so each tab still opens on the thing it is for.
+
+Implementation trap worth remembering: computing per-90 with
+`.replace(0, pd.NA)` flips the column to object dtype, and `NAType` has no
+`__round__`, which takes down the whole frame on the next line. Use
+`.where(mins > 0)` so the columns stay float and NaN stays float NaN.
+
 This supersedes the older "5 lenses" idea for tagging ledger entries: the
 **section is the lens**, by construction. A pick made in the Differentials section
 is a differentials call; nothing needs tagging by hand.
@@ -351,7 +406,7 @@ DONE:
 - Deadline-anchored capture added (`deadline-logger.yml`, `--deadline` mode),
   with the hourly gate verified against the live API at T-45min, T-119min, and
   just-past-deadline (where it correctly rolls forward to the next gameweek).
-- Schema widened to **31 columns** (§4c). The 24-column pass added `status`,
+- Schema widened to **41 columns** (§4c), in three passes. The 24-column pass added `status`,
   `news`, `chance_of_playing_next_round`, `form`, `event_points`, `total_points`,
   `minutes`, `snapshot_kind`, `deadline_time`; the 31-column pass added
   `ep_next`, `ep_this`, `news_added`, `chance_of_playing_this_round` and the
@@ -389,7 +444,8 @@ a section stays hidden behind an HTTP 200.
 
 ## 6a. NEXT UP — agreed sequencing (updated 2026-07-28)
 
-- ✅ ~~**Seven more logger columns**~~ — done, schema is 31 columns (§4c).
+- ✅ ~~**Seven more logger columns**~~ — done. A later pass added the actuals +
+  expected-goals group; schema is now 41 columns (§4c).
 - ✅ ~~**Gap detector**~~ — done (§4d).
 - ✅ ~~**Dashboard fetch bug**~~ — `User-Agent` + `raise_for_status()` added.
 - ✅ ~~**devcontainer / dashboard README**~~ — stale pre-flatten paths corrected.
@@ -605,3 +661,62 @@ Three consequences for the tooling:
    Differentials, the 50:50 lean, the Scout pick — that is the ledger's content,
    which is why §7 collapses the ledger into the workbench rather than building it
    separately.
+
+---
+
+## 10. How good is FPL's own expected-points figure? (measured 2026-07-30)
+
+Backtested, not assumed. **`ep_next` is not archived by the API** — neither
+`element-summary/<id>/history` nor `history_past` carries it — but the community
+archive at `vaastav/Fantasy-Premier-League` preserves it as an `xP` column in
+`data/<season>/gws/merged_gw.csv`, alongside `total_points`. Two full seasons,
+~57,000 player-gameweeks.
+
+**It beats every naive baseline, in both seasons.** Pearson r against actual
+points:
+
+| Population | FPL xP | Last GW's pts | Mean of last 3 | Season avg |
+|---|---|---|---|---|
+| Everyone | **.67 / .70** | .40 / .38 | .48 / .47 | .51 / .48 |
+| Played (mins>0) | **.52 / .56** | .17 / .15 | .23 / .22 | .28 / .25 |
+| Started (60+ mins) | **.48 / .52** | .10 / .08 | .14 / .14 | .20 / .17 |
+
+**Read the second row, not the first.** The r≈0.70 headline is inflated: most of
+that skill is correctly predicting that non-players score zero. Among players who
+actually featured — the only population you would ever captain from — it is
+r≈0.52, and MAE is **1.8–2.1 points per player per gameweek**. A captaincy call
+is usually decided on a 2–3 point expected gap, so the model's own error is about
+the size of the decision.
+
+**The errors are systematic, and wrong in the two places that matter most:**
+
+| xP band | Predicts | Actually delivers |
+|---|---|---|
+| 0–1 | 0.45 | **1.56** |
+| 3–4 | 3.58 | 3.58 |
+| 6+ | 7.90 | **6.90** |
+
+Mid-distribution is near-perfectly calibrated. It **underrates fringe players**
+(it cannot predict who starts) and **overrates premiums by ~1 point**. Premiums
+are where captaincy lives; fringe players are where differentials live.
+
+**Working rules that follow from this:**
+- Use it to build a shortlist and to order the bench (mid-range, well calibrated).
+- Never let it break a 50:50 between two premiums. A gap under ~2 points is a
+  coin flip; 3+ means the direction is probably right.
+- It has no useful opinion on minutes, which is its single biggest weakness — and
+  exactly what the paid models claim to fix.
+- Never publish a single-player point prediction. "6 points" means "6 ± 2".
+
+**The bar an external model must clear is now a number:** beat r≈0.52 among
+players who featured (§7c).
+
+**Caveat:** the archive is community-scraped and the capture time within each
+gameweek is unknown. If some rows were scraped after kickoff, FPL may already
+have updated the figure, which would inflate these correlations — so treat them
+as an **upper bound**. Our own deadline captures fix this permanently: `ep_next`
+stored at a known moment (~T-25min) with an exact timestamp. From GW1 the same
+test can be run on our own data, and that version is publishable.
+
+Reproduce: `analysis/backtest_xp.py` (Spearman is computed as Pearson-on-ranks
+to avoid scipy, which is ABI-broken against the installed numpy).
