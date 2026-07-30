@@ -255,6 +255,12 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
             "G+A": (p.get("goals_scored") or 0) + (p.get("assists") or 0),
             "Next 5 FDR": round(fdr, 2) if fdr is not None else None,
             "Fixtures": opponents,
+            # Just the next opponent. The five-deep string is too wide for the
+            # decision tables; the full run lives on the Roadmap ticker.
+            "Next": (
+                f"{teams.get(runs[0][1], {}).get('short_name', '?')}"
+                f"{'(H)' if runs[0][2] else '(A)'}" if runs else ""
+            ),
             "Net transfers": (p.get("transfers_in_event") or 0) - (p.get("transfers_out_event") or 0),
             "status": p.get("status"),
             "news": p.get("news") or "",
