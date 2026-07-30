@@ -186,14 +186,24 @@ def table(frame: pd.DataFrame, cols: list[str], height: int | None = None) -> No
     # and rejects None outright, so `height=None` raises rather than meaning
     # "default" -- and Streamlit Cloud runs a newer build than most local envs,
     # which is exactly how this reached production unnoticed.
+    # Select only columns that actually exist. frame[cols] raises KeyError on the
+    # first missing label, which takes down the entire page for one absent
+    # column -- and pandas/Streamlit versions differ between here and Streamlit
+    # Cloud, so a column present locally is not guaranteed present there. A
+    # missing column should degrade one table, not the app.
+    present = [c for c in cols if c in frame.columns]
+    missing = [c for c in cols if c not in frame.columns]
+
     kwargs = {
         "hide_index": True,
         "width": "stretch",
-        "column_config": {k: v for k, v in FMT.items() if k in cols},
+        "column_config": {k: v for k, v in FMT.items() if k in present},
     }
     if height is not None:
         kwargs["height"] = height
-    st.dataframe(frame[cols], **kwargs)
+    st.dataframe(frame[present], **kwargs)
+    if missing:
+        note("Unavailable in this view: " + ", ".join(missing))
 
 
 def paste(md: str) -> None:
@@ -364,17 +374,24 @@ with t[4]:
     diffs = df[(df["Own %"] < cap) & df["Available"] & df["Pos"].isin(dpos)] \
         .sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
 
-    cols = ["Player", "Team", "Price", "Own %", "Form", "xP next",
-            "Goals", "xG", "Assists", "xA", "xGI/90", "DefCon/90", "Next 5 FDR", "Next"]
     trend = fpl.movement(history, "selected_by_percent", days=7)
+    trend_cols = []
     if not trend.empty:
-        diffs = diffs.merge(trend[["id", "delta"]], on="id", how="left")
-        diffs["Δ own"] = diffs["delta"].round(1)
-        table(diffs, cols[:4] + ["Δ own"] + cols[4:])
+        # map() rather than merge(): no suffix collisions, and no risk of
+        # duplicating rows if the history ever contains an id twice. The column
+        # is only requested when it was actually created, so the table never
+        # asks for something that may not be there.
+        diffs["Δ own"] = diffs["id"].map(
+            trend.drop_duplicates("id").set_index("id")["delta"]
+        ).round(1)
+        trend_cols = ["Δ own"]
     else:
         note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
              f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
-        table(diffs, cols)
+
+    table(diffs, ["Player", "Team", "Price", "Own %"] + trend_cols +
+                 ["Form", "xP next", "Goals", "xG", "Assists", "xA",
+                  "xGI/90", "DefCon/90", "Next 5 FDR", "Next"])
 
     with st.expander("Underperforming their underlying numbers · the 'he's due' case"):
         note("Creating chances, returns not arriving yet. Low ownership plus fixtures "

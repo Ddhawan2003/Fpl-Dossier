@@ -394,12 +394,12 @@ def movement(history: pd.DataFrame, column: str, days: int = 7) -> pd.DataFrame:
     if earlier == latest:
         return pd.DataFrame()
 
-    now = history[history["snapshot_date"] == latest][["id", column]].rename(
-        columns={column: "now"}
-    )
-    then = history[history["snapshot_date"] == earlier][["id", column]].rename(
-        columns={column: "then"}
-    )
+    # drop_duplicates guards against an id appearing twice for one date, which
+    # would otherwise multiply rows through every downstream join.
+    now = history[history["snapshot_date"] == latest][["id", column]] \
+        .drop_duplicates("id").rename(columns={column: "now"})
+    then = history[history["snapshot_date"] == earlier][["id", column]] \
+        .drop_duplicates("id").rename(columns={column: "then"})
     merged = now.merge(then, on="id", how="inner")
     merged["delta"] = merged["now"] - merged["then"]
     merged["from_date"] = earlier
