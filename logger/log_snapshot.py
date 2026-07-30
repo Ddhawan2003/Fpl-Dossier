@@ -136,6 +136,17 @@ COLUMNS = [
     "clean_sheets",
     "goals_conceded",
     "saves",
+    # --- defensive contribution ("DefCon", scoring rule since 2025-26) -------
+    # FPL already applies the position formula to `defensive_contribution`:
+    # CBIT for defenders, CBIRT (adds ball recoveries) for mid/fwd. Verified
+    # against live data -- Senesi (DEF) 419 = 357 CBI + 62 tackles, excluding
+    # his 155 recoveries; Anderson (MID) 515 = 209 CBIT + 306 recoveries. The
+    # components are logged too so the split stays inspectable if FPL ever
+    # changes the formula.
+    "defensive_contribution",
+    "clearances_blocks_interceptions",
+    "tackles",
+    "recoveries",
     # --- underlying (expected) numbers --------------------------------------
     # Paired with the actuals above, these give over/underperformance at READ
     # time. The difference is deliberately not a column: it is a subtraction,
@@ -292,6 +303,10 @@ def build_rows(data: dict, snapshot_utc: datetime, kind: str, event: dict | None
             "clean_sheets": p.get("clean_sheets", 0),
             "goals_conceded": p.get("goals_conceded", 0),
             "saves": p.get("saves", 0),
+            "defensive_contribution": p.get("defensive_contribution", 0),
+            "clearances_blocks_interceptions": p.get("clearances_blocks_interceptions", 0),
+            "tackles": p.get("tackles", 0),
+            "recoveries": p.get("recoveries", 0),
             "expected_goals": raw(p.get("expected_goals")),
             "expected_assists": raw(p.get("expected_assists")),
             "expected_goal_involvements": raw(p.get("expected_goal_involvements")),

@@ -87,11 +87,11 @@ not the dashboard's host.
 
 ### Snapshot columns
 
-41 columns, identical in both records. All raw FPL API fields except three
+45 columns, identical in both records. All raw FPL API fields except three
 capture-metadata columns. `now_cost` / `cost_change_*` are integer tenths
 (`75` = £7.5); division happens at read time, never at write time.
 
-The API exposes ~105 fields per player. We take 41, on one rule: log it if it's
+The API exposes ~105 fields per player. We take 45, on one rule: log it if it's
 **point-in-time** — overwritten the moment it changes, so it can never be
 recovered — or cheap context that makes the record self-contained. The rest are
 derivable after the fact and are skipped on purpose.
@@ -118,6 +118,7 @@ derivable after the fact and are skipped on purpose.
 | `form` | rolling 30-day figure the API recomputes continuously |
 | `event_points`, `total_points`, `minutes`, `starts` | scoring state to date |
 | `goals_scored`, `assists`, `clean_sheets`, `goals_conceded`, `saves` | actual returns |
+| `defensive_contribution` + `clearances_blocks_interceptions`, `tackles`, `recoveries` | **DefCon** and its components |
 | `expected_goals`, `expected_assists`, `expected_goal_involvements`, `expected_goals_conceded` | the underlying numbers those actuals are measured against |
 | `ep_this`, `ep_next` | **FPL's own expected-points forecast** |
 

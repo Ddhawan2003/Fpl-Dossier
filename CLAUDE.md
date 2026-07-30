@@ -121,7 +121,7 @@ missing header fails *only* once deployed. Both `logger/log_snapshot.py` and
 
 ## Snapshot schema semantics
 
-41 columns, identical in both records. The API exposes ~105 fields per player; the selection
+45 columns, identical in both records. The API exposes ~105 fields per player; the selection
 rule is "log it if it is point-in-time, or cheap context that makes the record
 self-contained." Traps that are not obvious from the header:
 
@@ -153,6 +153,16 @@ self-contained." Traps that are not obvious from the header:
   players get blank cells, not numbers.
 - **Deriving per-90: use `.where(mins > 0)`, not `.replace(0, pd.NA)`.** The latter flips the
   column to object dtype and `NAType` has no `__round__`, which takes down the whole frame.
+- **DefCon:** `defensive_contribution` already applies the position formula — CBIT for
+  defenders, CBIRT (adds recoveries) for mid/fwd. Verified against live data: Senesi (DEF)
+  419 = 357 CBI + 62 tackles, *excluding* 155 recoveries; Anderson (MID) 515 = 209 CBIT + 306
+  recoveries. So compare it directly against the bar; don't recompute it from components.
+- **The DefCon thresholds are not in the API.** `element_stats` names the stat but publishes
+  no threshold, so `DEFCON_BAR` in `dashboard/data.py` transcribes the Premier League's
+  published rules (DEF 10, MID/FWD 12, GKP ineligible). If FPL changes them nothing here will
+  notice — that constant is the single place to fix.
+- The minutes floor matters most for DefCon: a player with 1 minute and 1 clearance reads as
+  **90.0 per 90** without it.
 - `transfers_in_event` / `transfers_out_event` **reset at each deadline**. Diffing them
   across a deadline boundary yields a large negative number — segment by `event`, or diff the
   cumulative `transfers_in` / `transfers_out` instead.
@@ -217,7 +227,7 @@ and CRLF would break the workflows' bash.
 Pre-season is the only real build runway; once the season starts the team's ~2–3 hrs/week
 goes to publishing. GW1 deadline: **2026-08-21T17:30:00Z**.
 
-**Done 2026-07-28/30:** schema widened to 41 columns; gap detector shipped; dashboard fetch bug
+**Done 2026-07-28/30:** schema widened to 45 columns; gap detector shipped; dashboard fetch bug
 fixed (browser UA + `raise_for_status()`); Streamlit Cloud entrypoint corrected and the app
 deploys; devcontainer and `dashboard/README.md` repointed; **dashboard rebuilt around the 11
 content sections**, read-only, with `dashboard/data.py` owning all data access.

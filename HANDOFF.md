@@ -138,12 +138,12 @@ The gate compares timestamps as **strings**, not via jq's `fromdateiso8601` —
 that function is backed by `strptime` and is missing from some jq builds. A gate
 that silently errors is a gate that never fires.
 
-### 4c. Snapshot columns (both records, 41 columns, identical schema)
+### 4c. Snapshot columns (both records, 45 columns, identical schema)
 
 All raw FPL fields except the three capture-metadata columns. `now_cost` /
 `cost_change_*` are integer tenths (`75` = £7.5) — division happens at read time.
 
-The API exposes ~105 fields per player; the logger takes 41. The selection rule:
+The API exposes ~105 fields per player; the logger takes 45. The selection rule:
 log it if it is **point-in-time** (overwritten the moment it changes, so it can
 never be recovered) or cheap context that makes the record self-contained.
 Everything else is derivable after the fact and is skipped on purpose.
@@ -172,6 +172,8 @@ Everything else is derivable after the fact and is skipped on purpose.
 | `form` | rolling 30-day figure the API recomputes continuously |
 | `event_points`, `total_points`, `minutes`, `starts` | scoring state to date; `starts` is the "nailed on" signal |
 | `goals_scored`, `assists`, `clean_sheets`, `goals_conceded`, `saves` | actual returns |
+| `defensive_contribution` | **DefCon** — worth 2 pts/match at 10+ (DEF) or 12+ (MID/FWD) |
+| `clearances_blocks_interceptions`, `tackles`, `recoveries` | DefCon's components, kept so the split stays inspectable |
 | `expected_goals`, `expected_assists`, `expected_goal_involvements`, `expected_goals_conceded` | the underlying numbers those actuals are measured against |
 | `ep_this`, `ep_next` | **FPL's own expected-points forecast.** The most perishable data in the response: once a gameweek is played, what was predicted beforehand is gone. Also a free benchmark to grade our calls against. |
 
@@ -359,6 +361,27 @@ xGI/90 sits next to xPts on the Captain tab for a measured reason: the backtest
 in §10 shows FPL's projection runs ~1 point high on premiums, and xGI/90 is an
 independent check on whether an expensive player is actually creating chances.
 
+**DefCon (added 2026-07-30).** Defensive contribution is worth 2 points a match
+at 10+ CBIT (defenders) or 12+ CBIRT (mid/fwd); keepers are ineligible. Since the
+points are all-or-nothing per match and the API gives only season totals, the
+workbench shows **DefCon/90 against the position bar** — averaging above it is
+the best available proxy for "clears it most weeks" without per-match data.
+
+Two things worth knowing:
+- FPL's `defensive_contribution` **already applies the position formula**, verified
+  against live data (Senesi, DEF: 419 = 357 CBI + 62 tackles, excluding his 155
+  recoveries; Anderson, MID: 515 = 209 CBIT + 306 recoveries). Compare it directly
+  against the bar rather than recomputing from components — the components are
+  logged only so the split stays inspectable if FPL changes the rule.
+- **The thresholds are not in the API.** `element_stats` names the stat but
+  publishes no threshold, so `DEFCON_BAR` in `dashboard/data.py` transcribes the
+  Premier League's published rules. If FPL changes them, nothing here will notice;
+  that constant is the single place to correct.
+
+It appears on Bench Order (a cheap defender or holding midfielder clearing the bar
+is the bench-fodder meta), Scout Selection, Differentials and All players —
+deliberately **not** Captain, where 2 points is not the deciding factor.
+
 **Two guards, both load-bearing:**
 - `MIN_MINUTES_FOR_UNDERLYING = 450` in `dashboard/data.py`. Below roughly five
   full matches these numbers are noise; shown unguarded in September they flag
@@ -406,7 +429,7 @@ DONE:
 - Deadline-anchored capture added (`deadline-logger.yml`, `--deadline` mode),
   with the hourly gate verified against the live API at T-45min, T-119min, and
   just-past-deadline (where it correctly rolls forward to the next gameweek).
-- Schema widened to **41 columns** (§4c), in three passes. The 24-column pass added `status`,
+- Schema widened to **45 columns** (§4c), in four passes. The 24-column pass added `status`,
   `news`, `chance_of_playing_next_round`, `form`, `event_points`, `total_points`,
   `minutes`, `snapshot_kind`, `deadline_time`; the 31-column pass added
   `ep_next`, `ep_this`, `news_added`, `chance_of_playing_this_round` and the
@@ -445,7 +468,7 @@ a section stays hidden behind an HTTP 200.
 ## 6a. NEXT UP — agreed sequencing (updated 2026-07-28)
 
 - ✅ ~~**Seven more logger columns**~~ — done. A later pass added the actuals +
-  expected-goals group; schema is now 41 columns (§4c).
+  expected-goals group, and a fourth added DefCon; schema is now 45 columns (§4c).
 - ✅ ~~**Gap detector**~~ — done (§4d).
 - ✅ ~~**Dashboard fetch bug**~~ — `User-Agent` + `raise_for_status()` added.
 - ✅ ~~**devcontainer / dashboard README**~~ — stale pre-flatten paths corrected.

@@ -122,6 +122,10 @@ FMT = {
     "xA": st.column_config.NumberColumn("xA", format="%.1f"),
     "Form": st.column_config.NumberColumn("Form", format="%.1f"),
     "Next": st.column_config.TextColumn("Next"),
+    "DefCon": st.column_config.NumberColumn("DefCon", format="%d"),
+    "DefCon/90": st.column_config.NumberColumn("DefCon/90", format="%.1f"),
+    "Bar": st.column_config.NumberColumn("Bar", format="%d"),
+    "vs bar": st.column_config.NumberColumn("vs bar", format="%+.1f"),
     "xGI/90": st.column_config.NumberColumn("xGI/90", format="%.2f"),
     "xG/90": st.column_config.NumberColumn("xG/90", format="%.2f"),
     "xGC/90": st.column_config.NumberColumn("xGC/90", format="%.2f"),
@@ -361,7 +365,7 @@ with t[4]:
         .sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
 
     cols = ["Player", "Team", "Price", "Own %", "Form", "xP next",
-            "Goals", "xG", "Assists", "xA", "xGI/90", "Next 5 FDR", "Next"]
+            "Goals", "xG", "Assists", "xA", "xGI/90", "DefCon/90", "Next 5 FDR", "Next"]
     trend = fpl.movement(history, "selected_by_percent", days=7)
     if not trend.empty:
         diffs = diffs.merge(trend[["id", "delta"]], on="id", how="left")
@@ -396,8 +400,11 @@ with t[5]:
               ["Player", "Team", "Price", "Own %", "Flag"])
     with b:
         sub("Outfield")
+        # A cheap defender or holding midfielder who clears the DefCon bar is
+        # worth far more than his price suggests -- this is the bench-fodder meta.
         table(fodder[fodder["Pos"] != "GKP"].head(10),
-              ["Player", "Team", "Pos", "Price", "Own %", "Starts", "Flag"])
+              ["Player", "Team", "Pos", "Price", "Own %", "Starts",
+               "DefCon/90", "vs bar", "Flag"])
 
 # ---------- Scout ----------
 with t[6]:
@@ -418,6 +425,16 @@ with t[6]:
         backs = backs[backs["Available"] & backs["Pos"].isin(["GKP", "DEF"])] \
             .sort_values("xGC/90").head(10)
         table(backs, ["Player", "Team", "Pos", "Price", "Own %", "CS", "xGC/90", "Next 5 FDR"])
+
+    with st.expander("DefCon · who clears the 2-point bar"):
+        note("Defenders need 10+ CBIT a match, midfielders and forwards 12+ CBIRT. "
+             "Averaging above the bar is the best proxy without per-match data. "
+             "Keepers are not eligible.")
+        dc = fpl.underlying_sample(df)
+        dc = dc[dc["Available"] & dc["Pos"].isin(["DEF", "MID", "FWD"])] \
+            .sort_values("vs bar", ascending=False).head(15)
+        table(dc, ["Player", "Team", "Pos", "Price", "Own %",
+                   "DefCon", "DefCon/90", "Bar", "vs bar", "Next 5 FDR"])
 
     sub("Price trend · 14 days")
     pt = fpl.movement(history, "now_cost", days=14)
@@ -492,4 +509,4 @@ with t[11]:
         v = v[v["Player"].str.lower().str.contains(ql) | v["Team"].str.lower().str.contains(ql)]
     table(v.sort_values("xP next", ascending=False),
           ["Player", "Team", "Pos", "Price", "Own %", "Form", "xP next", "Goals", "xG",
-           "Assists", "xA", "xGI/90", "Next 5 FDR", "Flag"], height=560)
+           "Assists", "xA", "xGI/90", "DefCon/90", "vs bar", "Next 5 FDR", "Flag"], height=560)

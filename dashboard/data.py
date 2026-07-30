@@ -55,6 +55,16 @@ MIN_HISTORY_DAYS = 2
 # starts to mean something.
 MIN_MINUTES_FOR_UNDERLYING = 450
 
+# Defensive contribution ("DefCon") thresholds, worth 2 points per match:
+# defenders need 10+ CBIT, midfielders and forwards 12+ CBIRT (CBIT plus ball
+# recoveries). Keepers are not eligible.
+#
+# These numbers are NOT exposed by the API -- `element_stats` names the stat but
+# publishes no threshold -- so they are transcribed from the Premier League's
+# published rules. If FPL ever changes them, nothing here will notice, and this
+# constant is the thing to correct.
+DEFCON_BAR = {"DEF": 10, "MID": 12, "FWD": 12}
+
 
 # --------------------------------------------------------------------------
 # Live API
@@ -252,6 +262,7 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
             "Goals": p.get("goals_scored") or 0,
             "Assists": p.get("assists") or 0,
             "CS": p.get("clean_sheets") or 0,
+            "DefCon": p.get("defensive_contribution") or 0,
             "G+A": (p.get("goals_scored") or 0) + (p.get("assists") or 0),
             "Next 5 FDR": round(fdr, 2) if fdr is not None else None,
             "Fixtures": opponents,
@@ -282,13 +293,21 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
     # __round__, so the whole frame would blow up on the next line.
     per90 = (df["Mins"] / 90).where(df["Mins"] > 0)
     for out, src in [("xGI/90", "xGI"), ("xG/90", "xG"),
-                     ("xA/90", "xA"), ("xGC/90", "xGC")]:
+                     ("xA/90", "xA"), ("xGC/90", "xGC"), ("DefCon/90", "DefCon")]:
         df[out] = (df[src] / per90).round(2)
 
-    # Below the minutes floor the comparison is noise, so blank it rather than
-    # print a number nobody should act on.
+    # DefCon points are all-or-nothing per match, so what matters is whether a
+    # player clears his position's bar often. Averaging above it is the best
+    # proxy available without per-match data. Keepers are not eligible.
+    df["Bar"] = df["Pos"].map(DEFCON_BAR)
+    df["vs bar"] = (df["DefCon/90"] - df["Bar"]).round(2)
+
+    # Below the minutes floor these are noise, so blank them rather than print a
+    # number nobody should act on. It bites hardest on DefCon/90: a player with
+    # one minute and one clearance reads as 90.0 per 90.
     thin = df["Mins"] < MIN_MINUTES_FOR_UNDERLYING
-    df.loc[thin, ["Over/Under", "xGI/90", "xG/90", "xA/90", "xGC/90"]] = float("nan")
+    df.loc[thin, ["Over/Under", "xGI/90", "xG/90", "xA/90", "xGC/90",
+                  "DefCon/90", "vs bar"]] = float("nan")
 
     df["Available"] = df["status"] == "a"
     df["Flag"] = df.apply(_flag_label, axis=1)
