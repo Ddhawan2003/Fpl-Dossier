@@ -65,6 +65,15 @@ MIN_MINUTES_FOR_UNDERLYING = 450
 # constant is the thing to correct.
 DEFCON_BAR = {"DEF": 10, "MID": 12, "FWD": 12}
 
+# Columns build_players() derives rather than reads. Downstream code sorts and
+# filters on these, so a missing one surfaces as an opaque KeyError hundreds of
+# lines away. Streamlit Cloud runs a newer pandas than most local environments
+# and has twice produced a column here that exists locally but not there, so
+# build_players() guarantees all of them exist and are float64 before returning.
+DERIVED_NUMERIC = [
+    "Over/Under", "xGI/90", "xG/90", "xA/90", "xGC/90", "DefCon/90", "Bar", "vs bar",
+]
+
 
 # --------------------------------------------------------------------------
 # Live API
@@ -299,7 +308,11 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
     # DefCon points are all-or-nothing per match, so what matters is whether a
     # player clears his position's bar often. Averaging above it is the best
     # proxy available without per-match data. Keepers are not eligible.
-    df["Bar"] = df["Pos"].map(DEFCON_BAR)
+    # to_numeric rather than trusting .map()'s inferred dtype: `Pos` is a string
+    # column, GKP has no bar, and how a given pandas represents that miss (NaN
+    # vs pd.NA, float vs nullable) varies by version. Forcing float64 makes the
+    # subtraction and round below behave the same everywhere.
+    df["Bar"] = pd.to_numeric(df["Pos"].map(DEFCON_BAR), errors="coerce")
     df["vs bar"] = (df["DefCon/90"] - df["Bar"]).round(2)
 
     # Below the minutes floor these are noise, so blank them rather than print a
@@ -308,6 +321,15 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
     thin = df["Mins"] < MIN_MINUTES_FOR_UNDERLYING
     df.loc[thin, ["Over/Under", "xGI/90", "xG/90", "xA/90", "xGC/90",
                   "DefCon/90", "vs bar"]] = float("nan")
+
+    # Output contract. Whatever a pandas version does with dtypes above, every
+    # derived column exists and is numeric by the time this returns -- so a
+    # version difference degrades a cell to blank instead of taking down the
+    # page with a KeyError from a tab three hundred lines away.
+    for col in DERIVED_NUMERIC:
+        if col not in df.columns:
+            df[col] = float("nan")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["Available"] = df["status"] == "a"
     df["Flag"] = df.apply(_flag_label, axis=1)

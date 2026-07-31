@@ -206,6 +206,18 @@ def table(frame: pd.DataFrame, cols: list[str], height: int | None = None) -> No
         note("Unavailable in this view: " + ", ".join(missing))
 
 
+def sorted_by(frame: pd.DataFrame, col: str, ascending: bool = True) -> pd.DataFrame:
+    """sort_values that tolerates the column being absent.
+
+    Pairs with table()'s missing-column handling: between them, a column that
+    exists locally but not on Streamlit Cloud degrades the table it belongs to
+    rather than crashing the whole page.
+    """
+    if col not in frame.columns:
+        return frame
+    return frame.sort_values(col, ascending=ascending)
+
+
 def paste(md: str) -> None:
     with st.expander("Copy for the post"):
         st.code(md.strip(), language="markdown")
@@ -221,10 +233,15 @@ with st.spinner("Fetching live FPL data…"):
         ev = fpl.next_event(bootstrap)
         load_error = None
     except Exception as e:  # noqa: BLE001
-        df, teams, ev, vintage, load_error = pd.DataFrame(), {}, None, {}, str(e)
+        # Keep the type: some exceptions stringify to "", and `if load_error:`
+        # would then be falsy, skipping the guard below and letting the page
+        # continue with an empty frame -- which resurfaces far away as an opaque
+        # KeyError instead of the real cause.
+        df, teams, ev, vintage = pd.DataFrame(), {}, None, {}
+        load_error = f"{type(e).__name__}: {e}"
 
-if load_error:
-    st.error(f"Could not reach the FPL API — {load_error}")
+if load_error is not None:
+    st.error(f"Could not load FPL data — {load_error}")
     st.stop()
 
 season = fpl.current_season()
@@ -289,7 +306,8 @@ with t[1]:
     # off the row rather than needing a separate table. xGI/90 stays because raw
     # totals favour whoever played more minutes.
     table(caps, ["Player", "Team", "Price", "Own %", "Form", "xP next",
-                 "Goals", "xG", "Assists", "xA", "xGI/90", "Next 5 FDR", "Next"])
+                 "Goals", "xG", "Assists", "xA", "xGI/90", "DefCon/90",
+                 "Next 5 FDR", "Next"])
     paste("\n".join(
         f"{i}. **{r['Player']}** ({r['Team']}) — xPts {r['xP next']:.1f}, {r['Own %']:.1f}% owned"
         for i, (_, r) in enumerate(caps.head(4).iterrows(), 1)))
@@ -333,7 +351,7 @@ with t[2]:
         note("A question, not a verdict — elite finishers beat xG every season. "
              f"Minimum {fpl.MIN_MINUTES_FOR_UNDERLYING} minutes played.")
         hot = fpl.underlying_sample(df)
-        hot = hot[hot["Own %"] >= 1.0].sort_values("Over/Under", ascending=False).head(8)
+        hot = sorted_by(hot[hot["Own %"] >= 1.0], "Over/Under", ascending=False).head(8)
         table(hot, ["Player", "Team", "Mins", "G+A", "xGI", "Over/Under", "Next 5 FDR"])
 
 # ---------- Roadmap ----------
@@ -397,8 +415,9 @@ with t[4]:
         note("Creating chances, returns not arriving yet. Low ownership plus fixtures "
              "turning is the strongest differential argument there is.")
         due = fpl.underlying_sample(df)
-        due = due[(due["Own %"] < cap) & due["Available"] & due["Pos"].isin(dpos)] \
-            .sort_values("Over/Under").head(8)
+        due = sorted_by(
+            due[(due["Own %"] < cap) & due["Available"] & due["Pos"].isin(dpos)],
+            "Over/Under").head(8)
         table(due, ["Player", "Team", "Price", "Own %", "G+A", "xGI", "Over/Under", "Next 5 FDR"])
 
     paste("\n".join(f"{i}. **{r['Player']}** ({r['Own %']:.1f}%) — {r['Team']}, xPts {r['xP next']:.1f}"
@@ -419,9 +438,12 @@ with t[5]:
         sub("Outfield")
         # A cheap defender or holding midfielder who clears the DefCon bar is
         # worth far more than his price suggests -- this is the bench-fodder meta.
+        # DefCon sits immediately after price/ownership: Bench Order is about
+        # finding cheap players who actually score, and that is the column
+        # answering it. It should not be behind a horizontal scroll.
         table(fodder[fodder["Pos"] != "GKP"].head(10),
-              ["Player", "Team", "Pos", "Price", "Own %", "Starts",
-               "DefCon/90", "vs bar", "Flag"])
+              ["Player", "Team", "Pos", "Price", "Own %",
+               "DefCon/90", "vs bar", "Starts", "Flag"])
 
 # ---------- Scout ----------
 with t[6]:
@@ -434,22 +456,26 @@ with t[6]:
 
     with st.expander("Chance creation · xGI per 90"):
         creators = fpl.underlying_sample(df)
-        creators = creators[creators["Available"]].sort_values("xGI/90", ascending=False).head(12)
+        creators = sorted_by(creators[creators["Available"]], "xGI/90", ascending=False).head(12)
         table(creators, ["Player", "Team", "Pos", "Price", "Own %", "xGI/90", "Next 5 FDR"])
 
     with st.expander("Defensive value · expected goals conceded per 90"):
         backs = fpl.underlying_sample(df)
-        backs = backs[backs["Available"] & backs["Pos"].isin(["GKP", "DEF"])] \
-            .sort_values("xGC/90").head(10)
+        backs = sorted_by(
+            backs[backs["Available"] & backs["Pos"].isin(["GKP", "DEF"])],
+            "xGC/90").head(10)
         table(backs, ["Player", "Team", "Pos", "Price", "Own %", "CS", "xGC/90", "Next 5 FDR"])
 
-    with st.expander("DefCon · who clears the 2-point bar"):
+    # Open by default: for cheap defenders and holding midfielders this is the
+    # primary reason to own them, not secondary analysis.
+    with st.expander("DefCon · who clears the 2-point bar", expanded=True):
         note("Defenders need 10+ CBIT a match, midfielders and forwards 12+ CBIRT. "
              "Averaging above the bar is the best proxy without per-match data. "
              "Keepers are not eligible.")
         dc = fpl.underlying_sample(df)
-        dc = dc[dc["Available"] & dc["Pos"].isin(["DEF", "MID", "FWD"])] \
-            .sort_values("vs bar", ascending=False).head(15)
+        dc = sorted_by(
+            dc[dc["Available"] & dc["Pos"].isin(["DEF", "MID", "FWD"])],
+            "vs bar", ascending=False).head(15)
         table(dc, ["Player", "Team", "Pos", "Price", "Own %",
                    "DefCon", "DefCon/90", "Bar", "vs bar", "Next 5 FDR"])
 

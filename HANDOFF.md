@@ -378,9 +378,17 @@ Two things worth knowing:
   Premier League's published rules. If FPL changes them, nothing here will notice;
   that constant is the single place to correct.
 
-It appears on Bench Order (a cheap defender or holding midfielder clearing the bar
-is the bench-fodder meta), Scout Selection, Differentials and All players —
-deliberately **not** Captain, where 2 points is not the deciding factor.
+It appears on Captain, Bench Order, Scout Selection, Differentials and All
+players. Bench Order is where it matters most — a cheap defender or holding
+midfielder clearing the bar is the bench-fodder meta — so `DefCon/90` sits
+immediately after price and ownership there rather than behind a horizontal
+scroll. On Scout the dedicated table is **expanded by default**: for cheap
+defensive players this is the primary reason to own them, not secondary
+analysis.
+
+(It was initially left off Captain on the grounds that 2 points does not decide
+an armband. Added on request, and the reasoning holds up: a captain who also
+clears the bar has a higher floor on a blank week.)
 
 **Two guards, both load-bearing:**
 - `MIN_MINUTES_FOR_UNDERLYING = 450` in `dashboard/data.py`. Below roughly five
