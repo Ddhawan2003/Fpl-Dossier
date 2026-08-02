@@ -419,6 +419,85 @@ is what the dashboard automates. **Eye Test — the longest and strongest sectio
 gets no automation at all.** The entire point of automating the mechanical third
 is to buy back time for the section that actually differentiates the product.
 
+### 5d. Instagram post card generator — DRAFT 1 (added 2026-08-02)
+
+**Status: draft 1. It works end to end and is not yet signed off on design.**
+Treat the layout constants as provisional; the plumbing underneath them is not.
+
+`dashboard/card.py` reproduces the team's Canva post template in code. The
+"Post card" tab takes a player, a verdict (BUY / SELL / HOLD) and a confidence
+rating, and returns a finished 1080×1350 PNG to download. What was twenty
+minutes of manual Canva work per post is now a click.
+
+It is a **pure module** — no Streamlit, no network, no data access. It takes a
+fully-resolved `CardSpec` of already-computed values and returns PNG bytes. That
+keeps rule 2 intact: every number on the card was computed exactly upstream in
+`data.py`, and `card.py` only typesets it. It also means the card can be
+rendered from a plain script with no Streamlit runtime, which is how every image
+in this section was checked.
+
+**Why the accent colour follows the verdict, not the club.** The source template
+puts a Man Utd player on a green wash — that green reads BUY, it does not read
+United. Verdict-coloured also makes the three calls distinguishable at a glance
+in a feed, which club colours would actively work against (two red clubs, two
+blue). Club colours are a 20-entry constant and a one-line change if this is ever
+reversed.
+
+**The stat strip labels its own vintage, and that is load-bearing.**
+`bootstrap-static` carries season *totals* only, so "LAST 6 GWS" cannot be
+computed from the master frame at all. It comes from
+`element-summary/<id>/history`, the one endpoint with per-match rows, fetched for
+the single clicked player rather than the league. Pre-season that endpoint is
+empty, so the card falls back to season totals and captions itself
+**`2025-26 SEASON`** instead. This is the §8 off-season trap in its most
+dangerous form: an unlabelled strip of last season's numbers under a "GW1" badge
+would be published to Instagram looking entirely plausible. The caption is the
+guard, not decoration.
+
+**Renders cover 142 of 563 players** (`data/renders/`, fetched by
+`fpl_renders_all.py` from FootyRenders). The gaps are not only fringe players —
+Haaland has no render. A missing render degrades to a clean text-only card and
+the tab says which case you are in. `card.headshot_url()` is there if FPL's own
+square headshot is ever wanted as a second-tier fallback.
+
+Four things that will bite anyone editing this:
+
+- **The render join is by filename, and it is fragile by construction.** Files
+  are named `safe_name(first_name + " " + second_name)` with no transliteration,
+  so Ødegaard is on disk as `Martin_degaard` and Groß as `Pascal_Gro`. Any lookup
+  must reproduce that byte for byte. `card.safe_name()` exists to be the single
+  copy of that rule — do not hand-roll a second one.
+- **Fonts are vendored** in `dashboard/assets/fonts/` (Anton, Barlow — both OFL,
+  hence committable). Streamlit Cloud ships almost no fonts. The two faces that
+  match this template on a Windows box, Impact and Arial Black, are
+  Microsoft-licensed and must never be committed here.
+- **Letterspaced text must share a baseline, not an ink top.** Drawing each glyph
+  anchored to its own ink top renders `2025-26` as `2025‾26` — a hyphen's ink
+  starts at mid-x-height, so top-aligning lifts it to cap height. `_draw_tracked`
+  converts the block's ink top to one shared baseline. Anything with punctuation,
+  digits or lowercase hits this.
+- **Render scale is bounded on both axes.** After trimming, these PNGs range from
+  647×2375 to 2582×3846. Fitting on height alone spreads a wide figure across the
+  whole card and leaves a narrow one a sliver, so `_place_player` also floors the
+  figure's left edge to keep it off the headline column.
+
+Verified by rendering against the live API and inspecting the output, not just
+by the absence of an exception: the source Bruno Fernandes card reproduced; SELL
+and HOLD colourways; a 28-character name auto-shrinking to two lines; the widest
+and narrowest renders in the folder; and the no-render fallback. The whole app
+was then executed against a stubbed `streamlit` module — all 13 sections run and
+the card comes back as real PNG bytes through the app's own code path.
+
+**Not done in draft 1:** the Premier League badge, top right. The code draws it
+if a file is dropped at `dashboard/assets/logo.png`, but vendoring PL artwork
+into this repo is a call for the team to make, not a technical gap.
+
+This is also the first half of the ledger UI arriving early, and worth noticing
+as such. A card is the *rendering of a ledger row* — player, verdict, confidence,
+market state, timestamp. The tab already collects exactly that tuple; it just
+throws it away after drawing. When §7b's writeback decision is made, recording a
+call is the same form with a save step. See §6a item 1.
+
 ---
 
 ## 6. Current state (2026-07-28)
@@ -464,6 +543,13 @@ Dashboard — resolved:
 - ✅ Old set-piece panel's arbitrary `sp_rows[:8]` slice gone — Scout Selection
   now sorts takers by ownership. (37 players hold a first-choice set-piece role
   as of 2026-07-28, so this has real data now, not only in-season.)
+- 🟡 **Instagram post card generator — draft 1** (2026-08-02, §5d). Works end to
+  end; layout not yet signed off. Adds `dashboard/card.py`, a "Post card" tab,
+  vendored OFL fonts, and `pillow` to `dashboard/requirements.txt`. Two
+  pre-existing rough edges were fixed in passing: `head()` raised `KeyError` for
+  any tab absent from `TARGETS` (utility tabs carry no word-count budget, so it
+  now degrades like `table()` and `sorted_by()` already did), and `build_players`
+  now carries `first_name`, `second_name`, `code`, `team_name` and `Next long`.
 
 Verified by executing `app.py` end-to-end headlessly against the live API and
 real snapshot files: 10 tables and 3 paste blocks render, both intended warnings
@@ -482,17 +568,27 @@ a section stays hidden behind an HTTP 200.
 - ✅ ~~**devcontainer / dashboard README**~~ — stale pre-flatten paths corrected.
 
 - ✅ ~~**Dashboard rebuild**~~ — done, read-only, 11 sections (§5b).
+- 🟡 **Post card generator — draft 1** (§5d). Unblocked and shipped ahead of the
+  ledger because it needed nothing from §7b: it only *reads*. Design sign-off is
+  outstanding, and the layout constants are expected to move.
 
 Expect the workbench to look sparse for a while, and do **not** mistake that for
 breakage. Trend sections need a week or two of snapshots (1 stored as of
 2026-07-28); performance fields are 2025-26 until GW1 (§8); `ep_next` is coarse
 until the season starts. Sections that cannot say anything yet say so explicitly.
 
+**0. NOW — sign off (or redraw) the post card.** Cheap, and it is blocking a
+   real weekly output. See §5d for what draft 1 does and the one open asset
+   question (the PL badge).
+
 **1. NOW — decide the ledger writeback, then build it.** Recording a pick is what
    turns the read-only workbench into the calls ledger, and the whole moat rests
    on it. Streamlit Cloud has a read-only checkout, so this needs the
    git-vs-mutable-store decision in §7b. **This is the piece most likely to eat a
    week**, and it must exist before GW1 for the record to start with the season.
+   The post card tab already collects the exact tuple a ledger row needs
+   (player, verdict, confidence) and discards it — so the writeback decision now
+   unlocks two features, not one.
 
 **2. AFTER A FEW GAMEWEEKS — an external points model as a benchmark.**
    Not before. `ep_next` is enough in the meantime, and an external model should
