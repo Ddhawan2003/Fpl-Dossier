@@ -18,9 +18,10 @@ independent deployables in one monorepo**, deliberately running on different eng
 The dashboard is laid out as the **11 sections of the team's blog template**, in publishing
 order, so the tool mirrors the document being written. `dashboard/data.py` owns all data
 access (live API + snapshot history + trends); `dashboard/app.py` owns layout and sections
-and deals only in DataFrames. Three sections (Opening, Eye Test, Closing) are **human-only by
-design** and must never sprout a table — automating the mechanical ones exists to buy back
-time for the Eye Test.
+and deals only in DataFrames; `dashboard/card.py` renders the Instagram post card and is a
+pure function of an already-resolved spec (no Streamlit, no network). Three sections
+(Opening, Eye Test, Closing) are **human-only by design** and must never sprout a table —
+automating the mechanical ones exists to buy back time for the Eye Test.
 
 **Testing a Streamlit change:** `streamlit run` proves only that the server boots — the script
 body executes when a client connects, so a column error inside a section hides behind an
@@ -231,6 +232,14 @@ goes to publishing. GW1 deadline: **2026-08-21T17:30:00Z**.
 fixed (browser UA + `raise_for_status()`); Streamlit Cloud entrypoint corrected and the app
 deploys; devcontainer and `dashboard/README.md` repointed; **dashboard rebuilt around the 11
 content sections**, read-only, with `dashboard/data.py` owning all data access.
+
+**Draft 1, 2026-08-02:** Instagram post card generator (`dashboard/card.py` + "Post card"
+tab) — pick a player, verdict and confidence, download a finished 1080×1350 PNG. Works end
+to end; **design not signed off, layout constants provisional.** Read HANDOFF §5d before
+touching it — in particular: the render filename join is byte-fragile and lives only in
+`card.safe_name()`; fonts are vendored under `dashboard/assets/fonts/` because Streamlit
+Cloud has none and the Windows lookalikes are Microsoft-licensed; and the stat strip
+captions its own vintage, which is the off-season guard, not decoration.
 
 **Next actions, in order:**
 

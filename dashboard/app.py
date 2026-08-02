@@ -15,11 +15,13 @@ Read-only: it shows candidates, it does not record picks. Recording is the
 calls ledger and needs the writeback decision made first (HANDOFF §7b).
 """
 
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
 
+import card
 import data as fpl
 
 st.set_page_config(page_title="Gameweek Dossier", layout="wide", page_icon="⚽")
@@ -162,9 +164,17 @@ def fdr_styles(values: pd.DataFrame) -> pd.DataFrame:
 
 
 def head(name: str) -> None:
+    """Section heading, with its word-count budget when it has one.
+
+    TARGETS covers the eleven prose sections of the blog template. Utility tabs
+    are not written up and carry no budget, so a missing entry is normal here,
+    not an error -- same tolerance as table() and sorted_by().
+    """
+    target = TARGETS.get(name, "")
     st.markdown(
         f'<div class="head"><h3>{name}</h3>'
-        f'<span class="target">{TARGETS[name]}</span></div>',
+        + (f'<span class="target">{target}</span>' if target else "")
+        + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -286,7 +296,7 @@ st.markdown(
 )
 
 TABS = ["Opening", "Captain", "Buy/Sell/Hold", "Roadmap", "Differentials", "Bench",
-        "Scout", "Eye Test", "50:50", "Chips", "Closing", "All players"]
+        "Scout", "Eye Test", "50:50", "Chips", "Closing", "All players", "Post card"]
 t = st.tabs(TABS)
 
 # ---------- Opening ----------
@@ -553,3 +563,89 @@ with t[11]:
     table(v.sort_values("xP next", ascending=False),
           ["Player", "Team", "Pos", "Price", "Own %", "Form", "xP next", "Goals", "xG",
            "Assists", "xA", "xGI/90", "DefCon/90", "vs bar", "Next 5 FDR", "Flag"], height=560)
+
+# ---------- Post card ----------
+with t[12]:
+    head("Instagram card")
+    sub("Pick the player, make the call, download the post")
+
+    pick_col, verdict_col, conf_col = st.columns([3, 2, 2])
+    with pick_col:
+        card_names = df.sort_values("Own %", ascending=False)["Player"].tolist()
+        chosen = st.selectbox("Player", card_names, index=0)
+    with verdict_col:
+        verdict = st.radio("Call", list(card.VERDICTS), horizontal=True)
+    with conf_col:
+        confidence = st.slider("Confidence", 0, 5, 5)
+
+    row = df[df["Player"] == chosen].iloc[0]
+
+    # The render folder is filed under FPL's full legal name; the headline wants
+    # something a reader says out loud. Seeded, then left editable.
+    default_headline = card.headline_name(
+        row["first_name"], row["second_name"], row["Player"])
+    render_path = card.find_render(row["first_name"], row["second_name"])
+
+    stat_choices = list(fpl.CARD_STATS)
+    o1, o2 = st.columns([3, 4])
+    with o1:
+        headline = st.text_input("Name on the card", default_headline)
+        fixture = st.text_input("Fixture", row["Next long"] or "")
+    with o2:
+        wanted = st.multiselect("Stats (up to 3)", stat_choices,
+                                default=["Goals", "Assists", "Points"],
+                                max_selections=3)
+        window = st.slider("Gameweeks in the window", 1, 10, 6)
+
+    values, caption = fpl.window_stats(row["id"], wanted, last_n=window)
+
+    if values:
+        stats = [(int(values[k]) if float(values[k]).is_integer() else round(values[k], 1), k)
+                 for k in wanted]
+        strip_label = caption
+    else:
+        # No per-gameweek history exists yet, so there is no window to sum.
+        # Fall back to the season totals already in the frame and say plainly
+        # which season they describe -- an unlabelled strip of last season's
+        # numbers on a GW1 post is the exact off-season trap this repo warns
+        # about, and it would go out to Instagram looking entirely plausible.
+        season_map = {"Goals": "Goals", "Assists": "Assists", "Points": "Pts",
+                      "Minutes": "Mins", "Clean sheets": "CS", "DefCon": "DefCon"}
+        stats = [(int(row[season_map[k]]), k) for k in wanted if season_map.get(k) in row]
+        # Label the vintage from the season string rather than by subtracting a
+        # year off today's date -- .replace(year=...) raises on 29 February.
+        start = int(season.split("-")[0]) - 1
+        prior = f"{start}-{str(start + 1)[-2:]}"
+        strip_label = f"{prior} SEASON" if vintage.get("stale_performance") else "SEASON TO DATE"
+        note(f"No per-gameweek history yet, so the strip shows **{strip_label.lower()}** "
+             f"totals rather than the last {window} gameweeks.")
+
+    if render_path is None:
+        note(f"No cut-out render for {chosen} — the card will draw without one. "
+             f"Renders live in data/renders/ and cover 142 of {len(df)} players.")
+
+    logo = os.path.join(card.ASSETS, "logo.png")
+    png = card.draw_card(card.CardSpec(
+        name=headline,
+        verdict=verdict,
+        gw_label=gw,
+        opponent=fixture,
+        confidence=confidence,
+        stat_label=strip_label,
+        stats=stats,
+        render_path=render_path,
+        logo_path=logo if os.path.exists(logo) else None,
+    ))
+
+    preview, download = st.columns([3, 2])
+    with preview:
+        st.image(png, width=380)
+    with download:
+        st.download_button(
+            "Download PNG",
+            data=png,
+            file_name=f"{gw.replace(' ', '')}-{verdict.lower()}-{card.safe_name(chosen)}.png",
+            mime="image/png",
+            width="stretch",
+        )
+        note("1080×1350 — Instagram portrait, posts uncropped.")

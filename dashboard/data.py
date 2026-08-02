@@ -252,7 +252,14 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
         rows.append({
             "id": p["id"],
             "Player": p["web_name"],
+            # Carried for the post card: renders on disk are filed under
+            # `first_name second_name`, and FPL's headshot URL is keyed on
+            # `code` (stable across seasons) rather than `id` (not).
+            "first_name": p.get("first_name", ""),
+            "second_name": p.get("second_name", ""),
+            "code": p.get("code"),
             "Team": teams.get(tid, {}).get("short_name", "?"),
+            "team_name": teams.get(tid, {}).get("name", ""),
             "team_id": tid,
             "Pos": POS_NAMES.get(p["element_type"], "?"),
             "pos_id": p["element_type"],
@@ -280,6 +287,12 @@ def build_players(bootstrap: dict, fixtures: list, horizon: int = 5) -> pd.DataF
             "Next": (
                 f"{teams.get(runs[0][1], {}).get('short_name', '?')}"
                 f"{'(H)' if runs[0][2] else '(A)'}" if runs else ""
+            ),
+            # Same fixture spelled out, for the post card -- a graphic reads
+            # "Brighton (H)", not "BHA(H)".
+            "Next long": (
+                f"{teams.get(runs[0][1], {}).get('name', '?')}"
+                f" {'(H)' if runs[0][2] else '(A)'}" if runs else ""
             ),
             "Net transfers": (p.get("transfers_in_event") or 0) - (p.get("transfers_out_event") or 0),
             "status": p.get("status"),
@@ -427,3 +440,67 @@ def movement(history: pd.DataFrame, column: str, days: int = 7) -> pd.DataFrame:
     merged["from_date"] = earlier
     merged["to_date"] = latest
     return merged
+
+
+# --------------------------------------------------------------------------
+# Per-player recent form (the post card's stat strip)
+# --------------------------------------------------------------------------
+ELEMENT_SUMMARY_URL = "https://fantasy.premierleague.com/api/element-summary/{id}/"
+
+# What the card can put in its three stat slots: label -> per-match API field.
+# Every one of these is a plain sum over the window, so the card only ever
+# typesets a number that was added up here.
+CARD_STATS = {
+    "Goals": "goals_scored",
+    "Assists": "assists",
+    "Points": "total_points",
+    "Bonus": "bonus",
+    "Minutes": "minutes",
+    "Clean sheets": "clean_sheets",
+    "DefCon": "defensive_contribution",
+    "Saves": "saves",
+}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def player_history(player_id: int) -> list:
+    """Per-gameweek rows for one player.
+
+    bootstrap-static carries season *totals* only, so a "last 6 gameweeks"
+    number cannot be computed from the master frame at all. This endpoint is the
+    one place per-match figures exist. It is fetched for a single clicked player,
+    not the whole league, so the cost is one call per card.
+
+    Returns [] on any failure -- pre-season it is legitimately empty, and the
+    caller falls back to season totals rather than showing a broken strip.
+    """
+    try:
+        data = _get_json(ELEMENT_SUMMARY_URL.format(id=int(player_id)))
+        return data.get("history", []) if isinstance(data, dict) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def window_stats(player_id: int, wanted: list[str], last_n: int = 6) -> tuple[dict, str]:
+    """Sum `wanted` stats over the player's last `last_n` played gameweeks.
+
+    Returns (values, caption). The caption is not decoration: off-season this
+    endpoint is empty and there is no window to sum, so the caller gets an empty
+    dict and a caption saying so, instead of a strip of zeros that would read as
+    "this player did nothing" rather than "the season hasn't started".
+    """
+    rows = player_history(player_id)
+    if not rows:
+        return {}, ""
+
+    rows = sorted(rows, key=lambda r: r.get("round") or 0)[-last_n:]
+    values = {}
+    for label in wanted:
+        field_name = CARD_STATS.get(label)
+        if not field_name:
+            continue
+        values[label] = sum(float(r.get(field_name) or 0) for r in rows)
+
+    played = len(rows)
+    caption = f"LAST {played} GW{'S' if played != 1 else ''}"
+    return values, caption
