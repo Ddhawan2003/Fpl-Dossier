@@ -1,5 +1,17 @@
-streamlit>=1.49
-pandas>=2.0
-requests>=2.31
-jinja2>=3.1
-pillow>=10.0
+# Ceilings are the point of this file, not the floors.
+#
+# Streamlit Community Cloud reinstalls from scratch on every reboot, and the
+# logger bot pushes to main daily -- so the app reboots roughly once a day and
+# re-resolves against whatever PyPI serves that morning. With bare `>=` floors,
+# identical code runs on different libraries day to day, and the first symptom
+# of a bad major release is a deploy that stopped working with no commit to
+# blame. Every ceiling below is a major version, so patches still flow.
+#
+# pandas is the live one: 3.0 is out, `pandas>=2.0` resolves to it, and this
+# codebase is written against 2.x semantics (dtype behaviour around
+# .where()/NA in dashboard/data.py in particular).
+streamlit>=1.49,<2
+pandas>=2.0,<3
+requests>=2.31,<3
+jinja2>=3.1,<4
+pillow>=10.0,<12

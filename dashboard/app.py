@@ -637,15 +637,14 @@ with t[12]:
         logo_path=logo if os.path.exists(logo) else None,
     ))
 
-    preview, download = st.columns([3, 2])
-    with preview:
-        st.image(png, width=380)
-    with download:
-        st.download_button(
-            "Download PNG",
-            data=png,
-            file_name=f"{gw.replace(' ', '')}-{verdict.lower()}-{card.safe_name(chosen)}.png",
-            mime="image/png",
-            width="stretch",
-        )
-        note("1080×1350 — Instagram portrait, posts uncropped.")
+    # No on-page preview. Rendering the card into the browser meant Streamlit
+    # held a decoded copy of it for the life of the session, on a container with
+    # ~1 GB of RAM -- and the card is only ever downloaded and posted, so the
+    # preview was paying that for a thumbnail nobody publishes. Download only.
+    st.download_button(
+        "Download PNG",
+        data=png,
+        file_name=f"{gw.replace(' ', '')}-{verdict.lower()}-{card.safe_name(chosen)}.png",
+        mime="image/png",
+    )
+    note("1080×1350 — Instagram portrait, posts uncropped.")
