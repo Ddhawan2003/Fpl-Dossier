@@ -114,6 +114,9 @@ FMT = {
     "Δ price": st.column_config.NumberColumn("Δ £", format="%+.1f"),
     "Δ price 14d": st.column_config.NumberColumn("Δ £ 14d", format="%+.1f"),
     "Δ own": st.column_config.NumberColumn("Δ Owned", format="%+.1f"),
+    # Signed on purpose: the sign *is* the read. "-40000" and "+40000" are
+    # opposite calls and must not be told apart by squinting at a minus.
+    "Net transfers": st.column_config.NumberColumn("Net transfers", format="%+d"),
     "Fixtures": st.column_config.TextColumn("Next fixtures"),
     "Set pieces": st.column_config.TextColumn("Set pieces"),
     "Flag": st.column_config.TextColumn("Status"),
@@ -402,20 +405,37 @@ with t[4]:
     diffs = df[(df["Own %"] < cap) & df["Available"] & df["Pos"].isin(dpos)] \
         .sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
 
-    trend = fpl.movement(history, "selected_by_percent", days=7)
+    # Flow, not stock. Ownership *level* is what this tab already filters on;
+    # what it was missing is direction, and Δ ownership is the wrong unit for it
+    # here. Everything on this table is under the ceiling by construction, and
+    # ownership is zero-sum (all 570 players always total 1500), so the whole
+    # low-owned pool bleeds fractions whenever the crowd piles into a premium.
+    # Measured on 2026-07-28 -> 08-04: 333 of the 516 players under 10% moved
+    # less than 0.05 points, which rounds to a column of 0.0s. Net transfers is
+    # the same signal before it has been divided by a growing manager base --
+    # 1.0% -> 1.3% is thirty percent more owners, and reads as +0.3 either way.
+    tstate = fpl.transfers_state(bootstrap, df)
     trend_cols = []
-    if not trend.empty:
-        # map() rather than merge(): no suffix collisions, and no risk of
-        # duplicating rows if the history ever contains an id twice. The column
-        # is only requested when it was actually created, so the table never
-        # asks for something that may not be there.
-        diffs["Δ own"] = diffs["id"].map(
-            trend.drop_duplicates("id").set_index("id")["delta"]
-        ).round(1)
-        trend_cols = ["Δ own"]
+    if tstate["live"]:
+        trend_cols = ["Net transfers"]
     else:
-        note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
-             f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
+        # Pre-GW1 and for a few hours after every deadline the counters are
+        # structurally zero, so fall back rather than render noughts.
+        trend = fpl.movement(history, "selected_by_percent", days=7)
+        if not trend.empty:
+            # map() rather than merge(): no suffix collisions, and no risk of
+            # duplicating rows if the history ever contains an id twice. The
+            # column is only requested when it was actually created, so the
+            # table never asks for something that may not be there.
+            diffs["Δ own"] = diffs["id"].map(
+                trend.drop_duplicates("id").set_index("id")["delta"]
+            ).round(1)
+            trend_cols = ["Δ own"]
+        else:
+            note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
+                 f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
+    if tstate["note"]:
+        note(tstate["note"])
 
     table(diffs, ["Player", "Team", "Price", "Own %"] + trend_cols +
                  ["Form", "xP next", "Goals", "xG", "Assists", "xA",

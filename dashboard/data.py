@@ -146,6 +146,76 @@ def detect_vintage(bootstrap: dict) -> dict:
     }
 
 
+def transfers_state(bootstrap: dict, df: pd.DataFrame) -> dict:
+    """Whether `Net transfers` carries signal yet, and what window it covers.
+
+    FPL zeroes `transfers_in_event` / `transfers_out_event` at every deadline,
+    so the field already means "net transfers committed toward the next
+    gameweek". We deliberately do not re-derive that window ourselves: the
+    deadline is the correct boundary because a transfer is *made for* a
+    specific gameweek, and reconstructing it by diffing snapshots would be
+    strictly worse than reading the counter FPL maintains (rule 2 -- exact
+    arithmetic stays in the source field, not in our subtraction).
+
+    Two situations leave the counters at zero for everyone, and they are
+    indistinguishable in the data:
+
+      * **Before GW1's deadline** nobody can transfer at all -- managers are
+        building an initial squad, which FPL does not count. This is where the
+        2026-27 season sits until 2026-08-21, and it is why swapping the
+        Differentials column over unguarded would render twelve noughts.
+      * **Just after any deadline** the counters have only-just reset, so the
+        column is empty for a few hours every gameweek.
+
+    Neither is an error, so neither should look like one. Callers fall back to
+    ownership movement and say which they are showing.
+    """
+    ev = next_event(bootstrap)
+    label = f"GW{ev['id']}" if ev else "the next gameweek"
+
+    if df.empty or "Net transfers" not in df.columns:
+        return {"live": False, "label": label, "note": "", "since": None}
+
+    moved = pd.to_numeric(df["Net transfers"], errors="coerce").abs().sum()
+    live = bool(moved > 0)
+
+    # How long the counter has been accumulating. Not decoration: 40k net in
+    # six hours after a deadline and 40k net over six days are very different
+    # claims, and the number alone cannot tell them apart.
+    since = None
+    if live and ev and ev.get("deadline_time"):
+        events = sorted(
+            (e for e in bootstrap.get("events", [])
+             if e.get("deadline_time") and e["id"] < ev["id"]),
+            key=lambda e: e["id"],
+        )
+        if events:
+            try:
+                prev = datetime.fromisoformat(
+                    events[-1]["deadline_time"].replace("Z", "+00:00"))
+                hours = (datetime.now(timezone.utc) - prev).total_seconds() / 3600
+                # A "previous" deadline in the future means the counters cannot
+                # have been accumulating since it -- the fixture list moved, or
+                # the clock is wrong. Say nothing rather than "-384h of
+                # transfers so far", which reads as a real measurement.
+                if hours > 0:
+                    since = f"{hours:.0f}h" if hours < 48 else f"{hours / 24:.1f}d"
+            except (ValueError, TypeError):
+                since = None
+
+    if live:
+        window = f" — {since} of transfers so far" if since else ""
+        note = f"Net transfers committed toward {label}{window}. Resets at each deadline."
+    else:
+        note = (
+            f"Transfers open once {label}'s deadline passes — until then every manager is "
+            f"building a squad, not transferring, so FPL's counters are zero for all 570 "
+            f"players. Showing ownership movement instead."
+        )
+
+    return {"live": live, "label": label, "note": note, "since": since}
+
+
 # --------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------
