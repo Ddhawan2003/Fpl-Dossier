@@ -216,6 +216,51 @@ def transfers_state(bootstrap: dict, df: pd.DataFrame) -> dict:
     return {"live": live, "label": label, "note": note, "since": since}
 
 
+def momentum(df: pd.DataFrame, history: pd.DataFrame, bootstrap: dict,
+             days: int = 7) -> tuple[pd.DataFrame, str | None, str]:
+    """Attach the best available "which way is the crowd moving" measure.
+
+    Returns (frame, column name, caption). Column is None when neither measure
+    is available yet, so callers can say so instead of ranking on nothing.
+
+    Two measures, and which one is honest depends on the calendar:
+
+      * **Net transfers** once the season is running -- the crowd's actual
+        committed movement, straight from FPL's counter.
+      * **Ownership change** before GW1, when no transfer exists to count.
+        Ownership is live and moving from the moment the game opens, which is
+        why the logger has captured it nightly since 2026-07-28 while every
+        transfer counter still reads zero.
+
+    Ranking by this is the point. Ownership *level* is a filter; ownership
+    *direction* is the signal, and a table sorted on projected points will
+    happily leave the biggest riser in the game off the page -- Gross climbed
+    2.5%% -> 7.7%% in the week to 2026-08-04 with an ep_next of 2.0, and
+    appeared nowhere on a top-12-by-xP differentials table.
+    """
+    state = transfers_state(bootstrap, df)
+    out = df.copy()
+
+    if state["live"]:
+        return out, "Net transfers", state["note"]
+
+    trend = movement(history, "selected_by_percent", days=days)
+    if trend.empty:
+        return out, None, (
+            f"Ownership direction needs {MIN_HISTORY_DAYS}+ daily snapshots to subtract. "
+            f"Fills in nightly."
+        )
+
+    # map() rather than merge(): no suffix collisions, and no duplicated rows if
+    # the history ever holds an id twice.
+    out["Δ own"] = out["id"].map(
+        trend.drop_duplicates("id").set_index("id")["delta"]).round(1)
+    window = f"{trend['from_date'].iloc[0]} → {trend['to_date'].iloc[0]}"
+    return out, "Δ own", (
+        f"Ownership change, {window}. {state['note']}"
+    )
+
+
 # --------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------

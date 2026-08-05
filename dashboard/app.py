@@ -402,44 +402,41 @@ with t[4]:
         dpos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"],
                               default=["DEF", "MID", "FWD"], key="dpos",
                               label_visibility="collapsed")
-    diffs = df[(df["Own %"] < cap) & df["Available"] & df["Pos"].isin(dpos)] \
-        .sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
+    # One measure, computed once, used by both the table below and the momentum
+    # panel: net transfers in-season, ownership change before GW1 exists.
+    moved, mcol, mnote = fpl.momentum(df, history, bootstrap)
+    pool = moved[(moved["Own %"] < cap) & moved["Available"] & moved["Pos"].isin(dpos)]
 
-    # Flow, not stock. Ownership *level* is what this tab already filters on;
-    # what it was missing is direction, and Δ ownership is the wrong unit for it
-    # here. Everything on this table is under the ceiling by construction, and
-    # ownership is zero-sum (all 570 players always total 1500), so the whole
-    # low-owned pool bleeds fractions whenever the crowd piles into a premium.
-    # Measured on 2026-07-28 -> 08-04: 333 of the 516 players under 10% moved
-    # less than 0.05 points, which rounds to a column of 0.0s. Net transfers is
-    # the same signal before it has been divided by a growing manager base --
-    # 1.0% -> 1.3% is thirty percent more owners, and reads as +0.3 either way.
-    tstate = fpl.transfers_state(bootstrap, df)
-    trend_cols = []
-    if tstate["live"]:
-        trend_cols = ["Net transfers"]
-    else:
-        # Pre-GW1 and for a few hours after every deadline the counters are
-        # structurally zero, so fall back rather than render noughts.
-        trend = fpl.movement(history, "selected_by_percent", days=7)
-        if not trend.empty:
-            # map() rather than merge(): no suffix collisions, and no risk of
-            # duplicating rows if the history ever contains an id twice. The
-            # column is only requested when it was actually created, so the
-            # table never asks for something that may not be there.
-            diffs["Δ own"] = diffs["id"].map(
-                trend.drop_duplicates("id").set_index("id")["delta"]
-            ).round(1)
-            trend_cols = ["Δ own"]
-        else:
-            note(f"Ownership direction needs {fpl.MIN_HISTORY_DAYS}+ snapshots — "
-                 f"{len(hist_dates)} stored. A player at 8% climbing is a different call from 8% flat.")
-    if tstate["note"]:
-        note(tstate["note"])
+    diffs = pool.sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
+    trend_cols = [mcol] if mcol else []
 
     table(diffs, ["Player", "Team", "Price", "Own %"] + trend_cols +
                  ["Form", "xP next", "Goals", "xG", "Assists", "xA",
                   "xGI/90", "DefCon/90", "Next 5 FDR", "Next"])
+
+    # The table above ranks on xP, so movement is only ever incidental to which
+    # rows appear -- on 2026-08-04 it shared none of its twelve with the eight
+    # biggest risers under the same ceiling, and left Gross (+5.2 in a week, the
+    # largest rise in the game) off a page whose whole job is to find him.
+    # Ranking on movement is a different question and needs its own panel.
+    sub("Where the crowd is moving")
+    if not mcol:
+        note(mnote)
+    else:
+        m = pool[pool[mcol].notna() & (pool[mcol] != 0)]
+        if m.empty:
+            note(f"Nobody under {cap:.1f}% has moved yet in this window.")
+        else:
+            note(mnote)
+            a, b = st.columns(2)
+            with a:
+                sub("Rising")
+                table(m.nlargest(8, mcol),
+                      ["Player", "Team", "Own %", mcol, "xP next", "Next 5 FDR"])
+            with b:
+                sub("Falling")
+                table(m.nsmallest(8, mcol).sort_values(mcol),
+                      ["Player", "Team", "Own %", mcol, "xP next", "Next 5 FDR"])
 
     with st.expander("Underperforming their underlying numbers · the 'he's due' case"):
         note("Creating chances, returns not arriving yet. Low ownership plus fixtures "
