@@ -262,6 +262,12 @@ history = fpl.load_history(season)
 hist_dates = fpl.history_dates(history)
 enough_history = len(hist_dates) >= fpl.MIN_HISTORY_DAYS
 
+# Resolved once, here, and shared by both panels that show crowd movement:
+# market-wide on Buy/Sell/Hold, and under the ownership ceiling on Differentials.
+# Computing it per-tab let the two drift -- after GW1 one would switch to net
+# transfers while the other stayed on ownership, with nothing on screen to say so.
+moved, mcol, mnote = fpl.momentum(df, history, bootstrap)
+
 # ---------- Masthead + status strip ----------
 gw = f"GW{ev['id']}" if ev else "GW —"
 top, refresh = st.columns([6, 1])
@@ -329,7 +335,6 @@ with t[1]:
 with t[2]:
     head("Buy / Sell / Hold")
     price = fpl.movement(history, "now_cost", days=7)
-    owned = fpl.movement(history, "selected_by_percent", days=7)
 
     if price.empty:
         note(f"Price movement needs {fpl.MIN_HISTORY_DAYS}+ daily snapshots — "
@@ -353,12 +358,32 @@ with t[2]:
     else:
         table(flagged.head(10), ["Player", "Team", "Own %", "Flag"])
 
-    if not owned.empty:
-        with st.expander("Ownership swings · 7 days"):
-            o = owned.merge(df[["id", "Player", "Team"]], on="id")
-            o["Δ own"] = o["delta"].round(1)
-            o = o.reindex(o["delta"].abs().sort_values(ascending=False).index)
-            table(o.head(8), ["Player", "Team", "Δ own"])
+    # Market-wide and deliberately unfiltered: this is the whole game moving.
+    # The Differentials tab asks the same question under an ownership ceiling.
+    #
+    # Not an expander and not a top-8. Collapsed, it went unread; sliced to eight
+    # it hid 216 of the 224 players who had actually moved. And ranking by
+    # *absolute* movement put the biggest faller directly above the biggest riser,
+    # so the direction had to be read off the sign of each number in turn.
+    sub("Ownership swings")
+    if not mcol:
+        note(mnote)
+    else:
+        m = moved[moved[mcol].notna() & (moved[mcol] != 0)]
+        if m.empty:
+            note("Nobody has moved yet in this window.")
+        else:
+            note(mnote)
+            up, down = m[m[mcol] > 0], m[m[mcol] < 0]
+            a, b = st.columns(2)
+            with a:
+                sub(f"Rising · {len(up)}")
+                table(up.sort_values(mcol, ascending=False),
+                      ["Player", "Team", "Own %", mcol], height=420)
+            with b:
+                sub(f"Falling · {len(down)}")
+                table(down.sort_values(mcol),
+                      ["Player", "Team", "Own %", mcol], height=420)
 
     with st.expander("Overperforming their underlying numbers"):
         note("A question, not a verdict — elite finishers beat xG every season. "
@@ -402,9 +427,8 @@ with t[4]:
         dpos = st.multiselect("Positions", ["GKP", "DEF", "MID", "FWD"],
                               default=["DEF", "MID", "FWD"], key="dpos",
                               label_visibility="collapsed")
-    # One measure, computed once, used by both the table below and the momentum
-    # panel: net transfers in-season, ownership change before GW1 exists.
-    moved, mcol, mnote = fpl.momentum(df, history, bootstrap)
+    # `moved`/`mcol` are resolved once up top and shared with the market-wide
+    # panel on Buy/Sell/Hold, so the two can never be measuring different things.
     pool = moved[(moved["Own %"] < cap) & moved["Available"] & moved["Pos"].isin(dpos)]
 
     diffs = pool.sort_values(["xP next", "Own %"], ascending=[False, True]).head(12)
