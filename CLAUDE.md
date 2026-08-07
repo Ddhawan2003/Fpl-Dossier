@@ -92,6 +92,18 @@ looks legitimate. It refuses on: <300 players returned; a deadline that has alre
 `os.replace`). On failure it exits non-zero *and* opens a GitHub issue labelled
 `logger-failure`. Preserve all of this when editing.
 
+**A late run must not steal the next day's slot.** GitHub scheduling is best-effort:
+this job fires at 22:30 UTC and *routinely* starts ~60 minutes late, and on 2026-08-06
+GitHub dropped every slot between 18:27 and 00:41 so it did not start until 01:36 the next
+morning. Stamping the file by wall clock filed that capture as `2026-08-07.csv` and left
+2026-08-06 with nothing — a permanent gap, and one that raised no alarm because *the run
+succeeded*. `daily_bucket_date()` therefore attributes any daily run starting before
+12:00 UTC back to the previous day. `snapshot_utc` still records the true instant verbatim;
+`snapshot_date` is the day the capture is *for*, and is passed into `build_rows()` rather
+than re-derived so it can never disagree with the filename — the dashboard orders history
+by `snapshot_date`, so a mismatch would silently collapse two days into one. `--date
+YYYY-MM-DD` overrides the inference for recovery runs.
+
 **The gap detector answers the question the others can't.** `logger/check_gaps.py` +
 `gap-check.yml` (weekly, Mondays 09:00 UTC, read-only). The capture workflows alert when a
 run *fails*; neither sees a run that never *happened* — no run → no failure → no issue →

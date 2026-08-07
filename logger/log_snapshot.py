@@ -253,14 +253,19 @@ def upcoming_deadline_event(data: dict, now: datetime) -> dict | None:
     return future[0] if future else None
 
 
-def build_rows(data: dict, snapshot_utc: datetime, kind: str, event: dict | None) -> list[dict]:
+def build_rows(data: dict, snapshot_utc: datetime, kind: str, event: dict | None,
+               date_str: str) -> list[dict]:
     teams = {t["id"]: t for t in data["teams"]}
 
     event_id = event["id"] if event else ""
     deadline_time = (event or {}).get("deadline_time") or ""
 
+    # `snapshot_utc` stays the exact instant of the fetch, verbatim. `date_str`
+    # is the day the capture is *for*, and is passed in rather than derived here
+    # so it cannot disagree with the filename -- the dashboard reads
+    # `snapshot_date` to order history, so a file named 08-06 carrying an
+    # 08-07 snapshot_date would collapse two days into one on every trend.
     iso = snapshot_utc.isoformat(timespec="seconds")
-    date_str = snapshot_utc.strftime("%Y-%m-%d")
 
     rows = []
     for p in data["elements"]:
@@ -336,10 +341,49 @@ def write_snapshot(rows: list[dict], out_path: str) -> None:
     os.replace(tmp_path, out_path)
 
 
-def resolve_daily(data: dict, snapshot_utc: datetime, repo_root: str) -> tuple[dict | None, str]:
+# The daily cron fires at 22:30 UTC, so a run that starts in the small hours is
+# a *delayed* run for the previous day, not an early one for today. GitHub only
+# promises best-effort scheduling and routinely runs this job ~60 minutes late;
+# on 2026-08-06 it dropped every slot between 18:27 and 00:41 and the daily job
+# did not start until 01:36 the next morning. Stamping that by wall clock filed
+# it as 2026-08-07 and left 2026-08-06 with no file at all -- a permanent gap,
+# because bootstrap-static has no history to backfill from.
+#
+# Anything landing before this hour is attributed back a day. 12:00 UTC sits
+# ten hours ahead of any plausible overnight delay and ten hours behind the next
+# scheduled fire, so it cannot mistake one for the other.
+DELAYED_RUN_CUTOFF_HOUR = 12
+
+
+def daily_bucket_date(snapshot_utc: datetime, override: str | None = None) -> str:
+    """Which calendar day a daily capture belongs to.
+
+    Deliberately not `snapshot_utc.date()`. See DELAYED_RUN_CUTOFF_HOUR: the
+    file must land in the bucket the run was *scheduled* for, or a late run
+    silently costs a day and steals the next one's slot.
+    """
+    if override:
+        # Explicit beats inferred -- for recovery runs, and for testing the
+        # attribution without waiting for GitHub to be late again.
+        datetime.strptime(override, "%Y-%m-%d")  # raises on a malformed date
+        return override
+
+    if snapshot_utc.hour < DELAYED_RUN_CUTOFF_HOUR:
+        intended = snapshot_utc - timedelta(days=1)
+        log(f"Run started {snapshot_utc.isoformat(timespec='seconds')}, before "
+            f"{DELAYED_RUN_CUTOFF_HOUR:02d}:00 UTC -- treating as a delayed run for "
+            f"{intended.strftime('%Y-%m-%d')} rather than filing it under today.")
+        return intended.strftime("%Y-%m-%d")
+
+    return snapshot_utc.strftime("%Y-%m-%d")
+
+
+def resolve_daily(data: dict, snapshot_utc: datetime, repo_root: str,
+                  date_str: str) -> tuple[dict | None, str]:
     """Anchor + output path for a daily capture."""
+    # season_for() keys off the capture instant, not the attributed day: a run
+    # delayed across 1 July still belongs to the season it was taken in.
     season = season_for(snapshot_utc)
-    date_str = snapshot_utc.strftime("%Y-%m-%d")
     out_path = os.path.join(repo_root, "data", "snapshots", season, f"{date_str}.csv")
     return current_event(data), out_path
 
@@ -405,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="With --deadline, bypass the pre-deadline window guard. For manual recovery only.",
     )
+    parser.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help="Force the daily capture into a specific day's file instead of inferring it. "
+             "Overrides the delayed-run attribution; ignored with --deadline.",
+    )
     args = parser.parse_args(argv)
 
     snapshot_utc = datetime.now(timezone.utc)
@@ -414,10 +464,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         data = fetch_bootstrap()
         if args.deadline:
+            # Deadline captures are anchored to the deadline itself, not to a
+            # calendar day, so delay attribution does not apply -- the window
+            # guard already refuses anything that drifted too far.
             event, out_path = resolve_deadline(data, snapshot_utc, repo_root, args.force)
+            date_str = snapshot_utc.strftime("%Y-%m-%d")
         else:
-            event, out_path = resolve_daily(data, snapshot_utc, repo_root)
-        rows = build_rows(data, snapshot_utc, kind, event)
+            date_str = daily_bucket_date(snapshot_utc, args.date)
+            event, out_path = resolve_daily(data, snapshot_utc, repo_root, date_str)
+        rows = build_rows(data, snapshot_utc, kind, event, date_str)
     except Exception as e:  # noqa: BLE001
         log(f"FATAL: {e!r}")
         log(f"No {kind} snapshot written. This capture is a permanent gap unless re-run in time.")
